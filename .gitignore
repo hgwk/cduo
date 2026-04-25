@@ -1,0 +1,22 @@
+node_modules/
+.DS_Store
+*.tgz
+*.pyc
+__pycache__/
+
+.omc/
+.omx/
+.serena/
+.cduo/
+
+.npmrc
+.env
+.env.*
+
+.claude/settings.local.json
+AGENTS.md
+.sisyphus/
+
+# Rust
+target/
+Cargo.lock
