@@ -1,22 +1,37 @@
+# Dependencies
 node_modules/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Archives
 *.tgz
+
+# Python
 *.pyc
 __pycache__/
 
+# AI tool directories
 .omc/
 .omx/
 .serena/
 .cduo/
+.sisyphus/
 
+# Local config
 .npmrc
 .env
 .env.*
-
 .claude/settings.local.json
-AGENTS.md
-.sisyphus/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
 # Rust
 target/
-Cargo.lock
+*.rs.bk
