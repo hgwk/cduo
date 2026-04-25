@@ -24,6 +24,7 @@ __pycache__/
 .env
 .env.*
 .claude/settings.local.json
+AGENTS.md
 
 # IDEs
 .vscode/
