@@ -108,7 +108,6 @@ pub fn attach_session(name: &str) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn kill_session(name: &str) -> Result<()> {
     ensure_tmux_installed()?;
 
@@ -126,27 +125,6 @@ pub fn kill_session(name: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[allow(dead_code)]
-pub fn list_sessions() -> Vec<String> {
-    let output = match Command::new("tmux")
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
-    };
-
-    if !output.status.success() {
-        return Vec::new();
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 fn ensure_tmux_installed() -> Result<()> {
@@ -167,12 +145,6 @@ mod tests {
     fn test_has_session_nonexistent() {
         let result = has_session("cduo-nonexistent-session-xyz123");
         assert!(!result);
-    }
-
-    #[test]
-    fn test_list_sessions_returns_vec() {
-        let sessions = list_sessions();
-        assert!(sessions.iter().all(|s| !s.is_empty()));
     }
 
     #[test]

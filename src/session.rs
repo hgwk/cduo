@@ -34,10 +34,13 @@ pub fn get_state_root() -> PathBuf {
         return PathBuf::from(dir);
     }
 
-    if let Some(proj_dirs) = ProjectDirs::from(PROJECT_QUALIFIER, PROJECT_ORGANIZATION, PROJECT_APPLICATION) {
-        return proj_dirs.state_dir().map(Path::to_path_buf).unwrap_or_else(|| {
-            proj_dirs.data_dir().to_path_buf()
-        });
+    if let Some(proj_dirs) =
+        ProjectDirs::from(PROJECT_QUALIFIER, PROJECT_ORGANIZATION, PROJECT_APPLICATION)
+    {
+        return proj_dirs
+            .state_dir()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| proj_dirs.data_dir().to_path_buf());
     }
 
     PathBuf::from("/tmp/cduo-state")

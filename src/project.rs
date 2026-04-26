@@ -22,12 +22,12 @@ struct ProjectPaths {
 }
 
 fn template_settings() -> Result<serde_json::Value> {
-    let template = include_str!("../.claude/settings.template.json");
+    let template = include_str!("../templates/claude-settings.json");
     Ok(serde_json::from_str(template)?)
 }
 
 fn template_orchestration() -> Result<String> {
-    let tmpl = include_str!("../orchestration-template.md");
+    let tmpl = include_str!("../templates/orchestration.md");
     Ok(tmpl.to_string())
 }
 
@@ -85,7 +85,12 @@ fn ensure_stop_hook(path: &Path, force: bool) -> Result<bool> {
     let existing: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
     if let Some(stop) = existing.get("hooks").and_then(|h| h.get("Stop")) {
         if !stop.is_null() && !stop.as_array().map(|a| a.is_empty()).unwrap_or(true) {
-            return Ok(false);
+            if Some(stop) == template_stop.as_ref() {
+                return Ok(false);
+            }
+            if !is_cduo_stop_hook(stop) {
+                return Ok(false);
+            }
         }
     }
 
@@ -103,6 +108,11 @@ fn ensure_stop_hook(path: &Path, force: bool) -> Result<bool> {
     }
     fs::write(path, serde_json::to_string_pretty(&value)?)?;
     Ok(true)
+}
+
+fn is_cduo_stop_hook(stop: &serde_json::Value) -> bool {
+    let text = stop.to_string();
+    text.contains("/hook") && text.contains("terminal_id")
 }
 
 fn ensure_claude_md(path: &Path, force: bool) -> Result<bool> {
@@ -135,38 +145,42 @@ pub fn doctor() -> Result<()> {
 
     let platform = std::env::consts::OS;
     let supported = platform == "macos" || platform == "linux";
-    println!("{} Platform: {platform} {}",
+    println!(
+        "{} Platform: {platform} {}",
         if supported { "✓" } else { "✗" },
-        if supported { "(supported)" } else { "(not supported)" }
+        if supported {
+            "(supported)"
+        } else {
+            "(not supported)"
+        }
     );
-    if !supported { failed = true; }
-
-    let node_version = option_env!("CDUO_NODE_VERSION_OVERRIDE").unwrap_or("N/A (Rust binary)");
-    println!("✓ Node.js: {node_version} (not needed for v2)");
+    if !supported {
+        failed = true;
+    }
 
     let tmux = which("tmux");
-    println!("{} tmux: {}",
+    println!(
+        "{} tmux: {}",
         if tmux.is_some() { "✓" } else { "✗" },
         tmux.as_deref().unwrap_or("not found")
     );
-    if tmux.is_none() { failed = true; }
-
-    let python = which("python3").or_else(|| which("python"));
-    println!("{} Python 3: {}",
-        if python.is_some() { "✓" } else { "✗" },
-        python.as_deref().unwrap_or("not found")
-    );
-    if python.is_none() { failed = true; }
+    if tmux.is_none() {
+        failed = true;
+    }
 
     let claude = which("claude");
-    println!("{} Claude CLI: {}",
+    println!(
+        "{} Claude CLI: {}",
         if claude.is_some() { "✓" } else { "✗" },
         claude.as_deref().unwrap_or("not found")
     );
-    if claude.is_none() { failed = true; }
+    if claude.is_none() {
+        failed = true;
+    }
 
     let codex = which("codex");
-    println!("{} Codex CLI: {}",
+    println!(
+        "{} Codex CLI: {}",
         if codex.is_some() { "✓" } else { "!" },
         codex.as_deref().unwrap_or("not found (optional)")
     );
@@ -240,7 +254,10 @@ pub fn uninstall() -> Result<()> {
                 fs::remove_file(&paths.settings_target)?;
                 println!("✓ Removed .claude/settings.local.json");
             } else {
-                fs::write(&paths.settings_target, serde_json::to_string_pretty(&value)?)?;
+                fs::write(
+                    &paths.settings_target,
+                    serde_json::to_string_pretty(&value)?,
+                )?;
                 println!("✓ Removed Stop hook from .claude/settings.local.json");
             }
         }
@@ -291,7 +308,10 @@ fn which(command: &str) -> Option<String> {
         .ok()?;
 
     if output.status.success() {
-        String::from_utf8(output.stdout).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        String::from_utf8(output.stdout)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     } else {
         None
     }
@@ -310,7 +330,8 @@ mod tests {
         assert!(changed);
         assert!(path.exists());
 
-        let content: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert!(content.get("hooks").and_then(|h| h.get("Stop")).is_some());
     }
 
@@ -323,7 +344,8 @@ mod tests {
         let changed = ensure_stop_hook(&path, false).unwrap();
         assert!(changed);
 
-        let content: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(content["permissions"]["defaultMode"], "accept");
         assert!(content["hooks"]["Stop"].is_array());
     }

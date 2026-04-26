@@ -3,13 +3,15 @@ use std::process;
 
 mod cli;
 mod daemon;
-mod extractors;
 mod hook;
+mod message;
+mod message_bus;
+mod pair_router;
 mod project;
 mod pty;
-mod relay;
 mod session;
 mod tmux;
+mod transcripts;
 
 use cli::Commands;
 
@@ -20,7 +22,8 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() >= 2 && args[1] == "__daemon" {
-        let session_id = args.iter()
+        let session_id = args
+            .iter()
             .position(|a| a == "--session")
             .and_then(|i| args.get(i + 1))
             .cloned()
@@ -41,8 +44,34 @@ async fn main() {
     let args = cli::Cli::parse();
 
     match args.command {
-        Commands::Start { agent, yolo, full_access, new_session } => {
+        Commands::Start {
+            agent,
+            yolo,
+            full_access,
+            new_session,
+        } => {
             if let Err(e) = daemon::start(agent, yolo, full_access, new_session).await {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        }
+        Commands::Claude {
+            yolo,
+            full_access,
+            new_session,
+        } => {
+            if let Err(e) = daemon::start(cli::Agent::Claude, yolo, full_access, new_session).await
+            {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        }
+        Commands::Codex {
+            yolo,
+            full_access,
+            new_session,
+        } => {
+            if let Err(e) = daemon::start(cli::Agent::Codex, yolo, full_access, new_session).await {
                 eprintln!("Error: {e}");
                 process::exit(1);
             }
@@ -98,7 +127,10 @@ async fn main() {
         Commands::Version => {
             println!("cduo 2.0.0");
         }
-        Commands::AttachPane { session_id, pane_id } => {
+        Commands::AttachPane {
+            session_id,
+            pane_id,
+        } => {
             if let Err(e) = daemon::attach_pane(session_id, pane_id).await {
                 eprintln!("Error: {e}");
                 process::exit(1);
@@ -106,5 +138,3 @@ async fn main() {
         }
     }
 }
-
-

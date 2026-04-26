@@ -22,19 +22,39 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         full_access: bool,
 
+        #[arg(long = "new", alias = "new-session", default_value_t = false)]
+        new_session: bool,
+    },
+
+    #[command(about = "Start or reconnect to a Claude workspace")]
+    Claude {
         #[arg(long, default_value_t = false)]
+        yolo: bool,
+
+        #[arg(long, default_value_t = false)]
+        full_access: bool,
+
+        #[arg(long = "new", alias = "new-session", default_value_t = false)]
+        new_session: bool,
+    },
+
+    #[command(about = "Start or reconnect to a Codex workspace")]
+    Codex {
+        #[arg(long, default_value_t = false)]
+        yolo: bool,
+
+        #[arg(long, default_value_t = false)]
+        full_access: bool,
+
+        #[arg(long = "new", alias = "new-session", default_value_t = false)]
         new_session: bool,
     },
 
     #[command(about = "Stop the current or named workspace")]
-    Stop {
-        session: Option<String>,
-    },
+    Stop { session: Option<String> },
 
     #[command(about = "Resume a workspace")]
-    Resume {
-        session: Option<String>,
-    },
+    Resume { session: Option<String> },
 
     #[command(about = "Show active cduo workspaces")]
     Status {
@@ -63,11 +83,8 @@ pub enum Commands {
     #[command(about = "Show version")]
     Version,
 
-    #[command(hide = true)]
-    AttachPane {
-        session_id: String,
-        pane_id: String,
-    },
+    #[command(name = "__attach-pane", hide = true)]
+    AttachPane { session_id: String, pane_id: String },
 }
 
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]

@@ -1,18 +1,11 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-    routing::post,
-    Router,
-};
+use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Clone)]
 pub struct HookEvent {
     pub terminal_id: String,
-    #[allow(dead_code)]
-    pub event_type: String,
+    pub transcript_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -20,6 +13,8 @@ struct HookPayload {
     #[serde(rename = "type")]
     event_type: String,
     terminal_id: String,
+    #[serde(default)]
+    transcript_path: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -64,16 +59,18 @@ async fn handle_hook(
         Err(_) => return (StatusCode::OK, Json(HookResponse { ok: false })),
     };
 
-    if payload.event_type != "stop" || (payload.terminal_id != "a" && payload.terminal_id != "b") {
+    if !payload.event_type.eq_ignore_ascii_case("stop")
+        || (payload.terminal_id != "a" && payload.terminal_id != "b")
+    {
         return (StatusCode::OK, Json(HookResponse { ok: false }));
     }
 
     let event = HookEvent {
         terminal_id: payload.terminal_id,
-        event_type: payload.event_type,
+        transcript_path: payload.transcript_path.filter(|path| !path.is_empty()),
     };
 
-    if relay_tx.send(event).await.is_err() {
+    if relay_tx.try_send(event).is_err() {
         return (StatusCode::OK, Json(HookResponse { ok: false }));
     }
 
@@ -83,8 +80,8 @@ async fn handle_hook(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
     use axum::body::to_bytes;
+    use axum::body::Body;
     use tower::util::ServiceExt;
 
     fn make_app() -> (Router, mpsc::Receiver<HookEvent>) {
@@ -251,6 +248,41 @@ mod tests {
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.terminal_id, "a");
-        assert_eq!(event.event_type, "stop");
+    }
+
+    #[tokio::test]
+    async fn test_full_channel_returns_without_blocking() {
+        let (tx, mut rx) = mpsc::channel::<HookEvent>(1);
+        tx.try_send(HookEvent {
+            terminal_id: "a".to_string(),
+            transcript_path: None,
+        })
+        .unwrap();
+        let app = Router::new()
+            .route("/hook", post(handle_hook))
+            .with_state(tx);
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            app.oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/hook")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"type":"stop","terminal_id":"a"}"#))
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let resp: HookResponse = serde_json::from_slice(&body).unwrap();
+        assert!(!resp.ok);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.terminal_id, "a");
     }
 }
