@@ -1,3 +1,15 @@
 /target
 .env*
 .DS_Store
+/dist/
+/npm/bin/
+
+# Project-local orchestration artifacts
+.cduo/
+CLAUDE.md
+.claude/settings.local.json
+
+# Local agent/tooling state
+AGENTS.md
+.omx/
+.sisyphus/
