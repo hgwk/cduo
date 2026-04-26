@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "HOOK_PORT=${ORCHESTRATION_PORT:-53333} TERMINAL_ID=${TERMINAL_ID:-} python3 -c 'import json, os, sys, urllib.request; hook=json.load(sys.stdin); payload={\"type\":\"stop\",\"terminal_id\":os.environ.get(\"TERMINAL_ID\", \"\"),\"transcript_path\":hook.get(\"transcript_path\", \"\")}; data=json.dumps(payload).encode(); url=\"http://127.0.0.1:\"+os.environ.get(\"HOOK_PORT\", \"53333\")+\"/hook\"; req=urllib.request.Request(url, data=data, headers={\"Content-Type\":\"application/json\"}, method=\"POST\");\ntry:\n    urllib.request.urlopen(req, timeout=0.2).read()\nexcept Exception:\n    pass'"
+          }
+        ]
+      }
+    ]
+  }
+}

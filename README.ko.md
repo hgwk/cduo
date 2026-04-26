@@ -11,15 +11,13 @@
 - 컨트롤러 프로세스가 두 agent를 direct PTY로 직접 실행
 - `tmux`를 제어 채널로 쓰지 않고 split pane 안에 두 세션을 그대로 보여 줌
 - Claude는 `Stop` hook 기반 completion relay
-- Codex는 live PTY 출력 추출 기반 completion relay
+- Codex는 rollout JSONL 기반 completion relay
 - `.claude/settings.local.json`과 `CLAUDE.md`를 통한 Claude 프로젝트 컨텍스트 관리
 - 파괴적 변경 전에 자동 백업 생성
 
 ## 요구 사항
 
-- Node.js `>=18`
 - `tmux`
-- 현재 패키지 런타임용으로 `python3` 또는 `python`으로 실행 가능한 Python `>=3`
 - Claude 세션용 `claude` CLI
 - Codex 세션용 공식 OpenAI `codex` CLI
 
@@ -104,7 +102,7 @@ cduo stop
 운영 메모:
 
 - `cduo resume`는 실행 중인 `tmux` workspace에 붙기 때문에 대화형 터미널이 필요합니다
-- `cduo status --verbose`는 진단용으로 pane별 readiness와 attach port 정보를 더 보여 줍니다
+- `cduo status --verbose`는 진단용으로 session id, agent, hook port, 생성 시각, pane별 attach port 정보를 더 보여 줍니다
 
 Workspace 선택 규칙:
 
@@ -188,8 +186,8 @@ Codex 옵션 매핑은 설치된 공식 CLI 버전에 따라 달라집니다.
 
 | 에이전트 | 실행 명령 | completion 감지 방식 | `start`가 수정하는 파일 |
 | --- | --- | --- | --- |
-| Claude | `claude` | `.claude/settings.local.json`의 `Stop` hook | Claude `Stop` hook을 생성하거나 병합할 수 있음 |
-| Codex | `codex` | 출력이 멈춘 뒤 터미널 출력 추출 | 없음 |
+| Claude | `claude` | `Stop` hook + Claude transcript JSONL | Claude `Stop` hook을 생성하거나 병합할 수 있음 |
+| Codex | `codex` | Codex rollout JSONL | 없음 |
 
 Codex를 선택하면 `cduo`는 현재 `PATH`의 `codex`가 공식 OpenAI CLI인지 먼저 확인합니다.
 
@@ -216,13 +214,13 @@ your-project/
 
 ## Relay 구조
 
-1. `cduo`가 `tmux` 밖에서 controller 프로세스를 시작합니다.
-2. controller가 선택된 agent를 `TERMINAL_ID`와 `ORCHESTRATION_PORT`를 가진 direct PTY 두 개로 실행합니다.
+1. `cduo`가 내장 daemon을 시작해 workspace를 관리합니다.
+2. daemon이 선택된 agent를 `TERMINAL_ID`와 `ORCHESTRATION_PORT`를 가진 direct PTY 두 개로 실행합니다.
 3. `tmux`는 split UI만 제공합니다.
-4. Claude는 `Stop` hook으로 completion 이벤트를 보냅니다.
-5. Codex는 prompt가 돌아온 뒤 live PTY 버퍼를 분석해 completion을 추출합니다.
-6. relay는 target pane별 pending queue를 유지하고, 오래된 대기 항목은 최신 completion으로 교체한 뒤 상대 pane이 다시 입력 가능한 상태가 될 때 전달합니다.
-7. turn limit과 cooldown이 runaway loop를 막습니다.
+4. Claude는 `Stop` hook으로 completion 이벤트와 transcript 경로를 보냅니다.
+5. Codex completion은 현재 workspace의 Codex rollout JSONL에서 읽습니다.
+6. `MessageBus`가 source/target/content 중복 전송을 막고 `PairRouter`가 상대 pane으로 전달합니다.
+7. relay 출력은 target PTY stdin에 직접 쓰고 Enter를 보냅니다. 터미널 UI 출력은 메시지 본문으로 쓰지 않습니다.
 
 선호하는 relay 기본 포트:
 
@@ -278,8 +276,8 @@ npm install -g @hgwk/cduo@latest
 - 더 깊은 진단이 필요하면 `cduo status --verbose`를 실행
 - `cduo start`, `cduo resume`, `cduo status`는 진행 전에 stale workspace 메타데이터를 자동 정리합니다
 - Claude는 relay 서버 로그에 hook 이벤트가 찍히는지 확인
-- Codex는 출력이 멈추고 프롬프트가 돌아왔는지 확인
-- target pane에 다시 입력 가능한 prompt가 나타나야 queue된 relay 메시지가 전송됩니다
+- Codex는 현재 프로젝트에 대응하는 최근 rollout JSONL이 `~/.codex/sessions/` 아래 생기는지 확인
+- target pane이 stdin을 받을 수 있어야 하며, `cduo`는 relay 텍스트를 쓴 뒤 Enter를 보냅니다
 - `cduo`를 업그레이드했다면 새 controller가 반영되도록 cduo 세션을 다시 시작해야 합니다
 - `tmux` 세션이 아직 살아 있는지 확인
 - 같은 프로젝트에서는 보통 `cduo resume`만으로 기대한 workspace에 다시 붙어야 합니다
@@ -315,57 +313,74 @@ Claude 시작 전에 `SessionStart:startup hook error`가 보이는 경우:
 
 ## 개발
 
-로컬 실행:
+소스에서 빌드:
 
 ```bash
-npm install
-npm start
-npm test
+git clone https://github.com/hgwk/cduo.git
+cd cduo
+cargo build --release
 ```
 
-참고:
+테스트 실행:
 
-- `npm start`는 `node bin/cli.js start`를 실행하며 바로 split workspace를 엽니다
-- `npm test`는 Node 내장 테스트 러너로 CLI, controller, extractor 회귀 테스트를 실행합니다
-- Codex를 직접 확인하려면 `node bin/cli.js codex` 또는 `node bin/cli.js codex yolo` 실행
+```bash
+cargo test
+```
+
+로컬 E2E 스모크 테스트:
+
+```bash
+scripts/e2e-test.sh
+```
+
+릴리즈 바이너리는 `target/release/cduo`에 생성됩니다.
 
 프로젝트 구조:
 
 ```text
 cduo/
-├── bin/
-│   └── cli.js
-├── lib/
-│   ├── agents.js
-│   ├── controller.js
-│   ├── output-extractors.js
-│   ├── pty-host.py
-│   └── session-store.js
-├── test/
-│   ├── agents.test.js
-│   ├── cli.test.js
-│   ├── controller.test.js
-│   └── output-extractors.test.js
-├── .claude/
-│   └── settings.template.json
+├── src/
+│   ├── main.rs           # CLI 진입점
+│   ├── cli.rs            # 명령 정의와 파싱
+│   ├── daemon.rs         # 내장 daemon과 세션 관리
+│   ├── hook.rs           # Claude HTTP hook 서버
+│   ├── pty.rs            # PTY 관리(portable-pty)
+│   ├── message.rs        # relay 메시지 모델
+│   ├── message_bus.rs    # 중복 제거 메시지 버스
+│   ├── pair_router.rs    # 1:1 라우팅 정책
+│   ├── session.rs        # 세션 메타데이터와 저장
+│   ├── tmux.rs           # tmux 세션 헬퍼
+│   └── transcripts/      # 에이전트 transcript 리더
+├── templates/
+│   ├── claude-settings.json
+│   └── orchestration.md
+├── npm/
+│   ├── install.js
+│   └── package.json
+├── scripts/
+│   └── e2e-test.sh
+├── docs/
+│   └── architecture.md
+├── Cargo.toml
+├── Cargo.lock
 ├── .github/
 │   └── workflows/
-│       └── publish-npm.yml
-├── orchestration-template.md
+│       ├── rust-ci.yml
+│       └── release.yml
 ├── LICENSE
 ├── README.md
-├── README.ko.md
-└── package.json
+└── README.ko.md
 ```
 
 배포 흐름:
 
 - GitHub 저장소: `hgwk/cduo`
 - npm 패키지: `@hgwk/cduo`
-- `.github/workflows/publish-npm.yml`가 `v*` 태그, GitHub Release, 수동 실행에서 publish를 처리합니다
-- npm 배포는 GitHub Actions OIDC trusted publishing을 사용하므로, npm 패키지 설정에서 이 저장소/워크플로를 trusted publisher로 등록해야 합니다
-- trusted publishing이 설정되면 GitHub workflow에는 `NPM_TOKEN` secret이 필요하지 않습니다
-- release 태그 버전은 `package.json` 버전과 같아야 합니다
+- GitHub Releases가 플랫폼별 Rust 바이너리를 호스팅합니다
+- `.github/workflows/rust-ci.yml`가 push와 pull request에서 테스트를 실행합니다
+- `.github/workflows/release.yml`가 버전 태그에서 바이너리를 빌드하고 npm 패키지를 배포합니다
+- npm 패키지는 설치 시 현재 플랫폼에 맞는 바이너리를 다운로드하는 얇은 wrapper입니다
+- release 태그 버전은 `Cargo.toml`과 `npm/package.json` 버전과 같아야 합니다
 
 ## 라이선스
 

@@ -12,7 +12,7 @@ Paired AI agent execution for Claude Code and OpenAI Codex in a split tmux works
 
 `cduo` runs two AI agent sessions side by side in a split `tmux` workspace, enabling paired agent execution with automatic message relaying between panes. It supports Claude Code (`claude`) and OpenAI Codex (`codex`) agents, detecting completions and forwarding context so both agents stay synchronized.
 
-Built as a single Rust binary with an embedded daemon, PTY manager, relay engine, and hook server. No Node.js or Python runtime required.
+Built as a single Rust binary with an embedded daemon, PTY manager, message bus, and hook server. No Node.js or Python runtime required.
 
 ## Requirements
 
@@ -91,7 +91,7 @@ If `cduo` starts from a non-interactive process, it creates the workspace and pr
 Operational notes:
 
 - `cduo resume` requires an interactive terminal because it attaches to the running `tmux` workspace
-- `cduo status --verbose` adds per-pane readiness and attach-port details for diagnostics
+- `cduo status --verbose` adds session id, agent, hook port, creation time, and pane attach-port details for diagnostics
 
 Workspace selection rules:
 
@@ -173,8 +173,8 @@ Reference for supported OpenAI Codex CLI options:
 
 | Agent | Launch command | Completion detection | Files touched by `start` |
 | --- | --- | --- | --- |
-| Claude | `claude` | `Stop` hook in `.claude/settings.local.json` | may create or merge the Claude `Stop` hook |
-| Codex | `codex` | PTY output extraction after output settles | none |
+| Claude | `claude` | `Stop` hook + Claude transcript JSONL | may create or merge the Claude `Stop` hook |
+| Codex | `codex` | Codex rollout JSONL | none |
 
 When Codex is selected, `cduo` checks that `codex` resolves to the official OpenAI CLI before launching.
 
@@ -205,9 +205,9 @@ Command behavior:
 2. The daemon launches the selected agent twice in direct PTYs with `TERMINAL_ID` and `ORCHESTRATION_PORT`.
 3. `tmux` provides the split UI.
 4. Claude sends completion events through the `Stop` hook to the embedded hook server.
-5. Codex completions are inferred from the live PTY buffer after the prompt returns.
-6. The relay queues completions per target pane, replaces stale pending entries with the latest one from that source, and waits until the opposite pane is input-ready before forwarding.
-7. Turn limits and cooldown guard against runaway loops.
+5. Codex completions are read from Codex rollout JSONL files for the current workspace.
+6. `MessageBus` deduplicates source/target/content deliveries and `PairRouter` forwards each agent response to its counterpart.
+7. Relay output is written directly to the target PTY stdin; terminal UI output is not used as message content.
 
 The daemon persists sessions using PID files and Unix sockets. Use `cduo resume` to reattach to the tmux session.
 
@@ -261,8 +261,8 @@ Messages are not relaying:
 - If you need deeper diagnostics, run `cduo status --verbose`
 - `cduo start`, `cduo resume`, and `cduo status` automatically remove stale workspace metadata before continuing
 - For Claude, confirm the relay server logs show hook events
-- For Codex, wait for the terminal output to settle and the prompt to return
-- The target pane must return to an input-ready prompt before queued relay messages are sent
+- For Codex, confirm a recent rollout JSONL exists under `~/.codex/sessions/` for the current project
+- The target pane must accept stdin; `cduo` writes the relayed text and then sends Enter
 - After upgrading `cduo`, restart the cduo session so the new daemon is actually running
 - Confirm the `tmux` session is still running
 - From the same project, `cduo resume` should reconnect to the expected workspace without an extra selector
@@ -312,6 +312,12 @@ Run tests:
 cargo test
 ```
 
+Run the local end-to-end smoke test:
+
+```bash
+scripts/e2e-test.sh
+```
+
 The release binary will be at `target/release/cduo`.
 
 Project layout:
@@ -320,28 +326,35 @@ Project layout:
 cduo/
 ├── src/
 │   ├── main.rs           # CLI entry point
+│   ├── cli.rs            # Command definitions and parsing
 │   ├── daemon.rs         # Embedded daemon and session management
+│   ├── hook.rs           # HTTP hook server for Claude
 │   ├── pty.rs            # PTY management (portable-pty)
-│   ├── relay.rs          # Event-driven relay engine
-│   ├── hook_server.rs    # HTTP hook server for Claude
-│   ├── agents/
-│   │   ├── mod.rs
-│   │   ├── claude.rs
-│   │   └── codex.rs
-│   ├── tmux/
-│   │   ├── mod.rs
-│   │   └── layout.rs
-│   └── config.rs         # Configuration and state management
+│   ├── message.rs        # Relay message model
+│   ├── message_bus.rs    # Deduping message bus
+│   ├── pair_router.rs    # 1:1 routing policy
+│   ├── session.rs        # Session metadata and persistence
+│   ├── tmux.rs           # tmux session helpers
+│   └── transcripts/      # Agent transcript readers
+├── templates/
+│   ├── claude-settings.json
+│   └── orchestration.md
+├── npm/
+│   ├── install.js
+│   └── package.json
+├── scripts/
+│   └── e2e-test.sh
+├── docs/
+│   └── architecture.md
 ├── Cargo.toml
 ├── Cargo.lock
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml
+│       ├── rust-ci.yml
 │       └── release.yml
 ├── LICENSE
 ├── README.md
-├── README.ko.md
-└── package.json          # npm wrapper metadata
+└── README.ko.md
 ```
 
 ## Release Flow
@@ -349,10 +362,10 @@ cduo/
 - GitHub repository: `hgwk/cduo`
 - npm package: `@hgwk/cduo`
 - GitHub Releases hosts platform-specific Rust binaries
-- `.github/workflows/ci.yml` runs tests on every push
+- `.github/workflows/rust-ci.yml` runs tests on every push and pull request
 - `.github/workflows/release.yml` builds and publishes binaries on version tags
 - The npm package is a thin wrapper that downloads the appropriate binary on install
-- Release tags must match the version in `Cargo.toml`
+- Release tags must match the versions in `Cargo.toml` and `npm/package.json`
 
 ## License
 
