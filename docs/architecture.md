@@ -2,6 +2,10 @@
 
 `cduo` is a single Rust binary that runs two Claude or Codex agent processes in direct PTYs and renders them in a native ratatui split-pane TUI. The running `cduo` process *is* the session — there is no background daemon, no control socket, and no tmux dependency.
 
+Every `start`, `claude`, or `codex` invocation creates a fresh foreground
+session. `--new` is currently accepted for CLI compatibility but does not change
+native runtime behavior.
+
 ## Runtime Shape
 
 ```text
@@ -21,11 +25,19 @@ The UI thread owns the PTY writers. The relay task communicates with the UI via 
 - `input_tx` — UI forwards each completed (pane, line) submission to the relay so codex rollouts can be matched to the owning pane.
 - `write_tx` — Relay sends `(target_pane, bytes)` tuples; the UI loop drains them and writes to the target PTY (bracketed-paste body, then a delayed `\r`).
 
+Session logs are written under the platform state directory:
+
+- macOS: `~/Library/Application Support/works.higgs.cduo/native/`
+- Linux: `~/.local/state/works.higgs.cduo/native/`
+
 ## Relay Sources
 
 - Claude: `Stop` hook posts `terminal_id` and `transcript_path` to the local hook server.
 - Codex: the relay discovers recent Codex rollout JSONL files under `~/.codex/sessions/` whose `session_meta.payload.cwd` matches the workspace and whose user prompts match a pending submission from that pane.
 - PTY output is rendered for the user but is **not** parsed as message content; transcripts are the only source of relay text.
+
+`cduo init` installs the Claude `Stop` hook into the project. Native `start`
+commands do not edit project files.
 
 ## Relay Flow
 
@@ -60,6 +72,7 @@ The UI thread owns the PTY writers. The relay task communicates with the UI via 
 - No background daemon, control socket, or attach mechanism.
 - No tmux dependency.
 - No N:N graph routing.
+- No project-file writes from native `start` commands.
 
 Those can be added later, but the stable base is transcript-sourced 1:1 relay running inside a single foreground process.
 

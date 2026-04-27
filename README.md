@@ -63,18 +63,27 @@ cd /path/to/project
 cduo codex
 ```
 
+Mixed Claude + Codex:
+
+```bash
+cd /path/to/project
+cduo init   # needed for Claude relay
+cduo start claude codex
+```
+
 Behavior summary:
 
 - `cduo` is the same as `cduo start`
 - `cduo start` defaults to Claude
 - `cduo init` is only needed for Claude-oriented project context
 - Codex sessions work without `cduo init`
+- Native sessions are foreground processes; closing the UI stops the agents
 
 ## Daily Workflow
 
 ```bash
 cduo doctor
-cduo claude
+cduo start claude codex
 ```
 
 Use `Ctrl-W` to switch focus between panes and `Ctrl-Q` to quit the native UI.
@@ -101,9 +110,8 @@ Use `Ctrl-W` to switch focus between panes and `Ctrl-Q` to quit the native UI.
 
 - `cduo start` accepts one optional agent for pane A and one optional peer agent for pane B
 - `--yolo` cannot be combined with `--full-access`
-- By default, `cduo claude`, `cduo codex`, and mixed-agent `cduo start claude codex` reconnect only to workspaces with the same project, agent pair, and access mode
-- Mixed-agent workspaces use a combined label such as `claude+codex`; reconnect with the same `cduo start claude codex` shape instead of `cduo claude`
-- Use `--new` only when you intentionally want a second workspace for the same project and agent
+- Native mode starts a fresh foreground session each time; there is no background workspace to attach or resume
+- `--new` / `--new-session` is accepted for CLI compatibility, but is currently a no-op in native mode
 - Unexpected extra start arguments are rejected instead of being ignored
 
 Valid examples:
@@ -149,7 +157,7 @@ Reference for supported OpenAI Codex CLI options:
 
 | Agent | Launch command | Completion detection | Files touched by `start` |
 | --- | --- | --- | --- |
-| Claude | `claude` | `Stop` hook + Claude transcript JSONL | may create or merge the Claude `Stop` hook |
+| Claude | `claude` | `Stop` hook + Claude transcript JSONL | none; run `cduo init` to install the hook |
 | Codex | `codex` | Codex rollout JSONL | none |
 
 When Codex is selected, `cduo` checks that `codex` resolves to the official OpenAI CLI before launching.
@@ -171,8 +179,7 @@ your-project/
 Command behavior:
 
 - `cduo init` manages both `.claude/settings.local.json` and `CLAUDE.md`
-- `cduo start` and `cduo claude ...` only manage the Claude `Stop` hook when Claude is selected
-- `cduo codex ...` does not modify project files
+- `cduo start`, `cduo claude ...`, and `cduo codex ...` do not modify project files
 - `cduo backup` writes timestamped copies into `.cduo/backups/`
 
 ## Relay Model
@@ -232,6 +239,7 @@ Messages are not relaying:
 
 - Run `cduo doctor` first and confirm the runtime is healthy
 - Confirm both panes are visible in the native UI
+- If a Claude pane is involved, run `cduo init` once in that project so the `Stop` hook exists
 - For Claude, confirm the relay server logs show hook events
 - For Codex, confirm a recent rollout JSONL exists under `~/.codex/sessions/` for the current project
 - The target pane must accept stdin; `cduo` writes the relayed text and then sends Enter
@@ -306,7 +314,8 @@ cduo/
 │   ├── install.js
 │   └── package.json
 ├── docs/
-│   └── architecture.md
+│   ├── architecture.md
+│   └── graph-routing-roadmap.md
 ├── Cargo.toml
 ├── Cargo.lock
 ├── .github/
@@ -325,8 +334,21 @@ cduo/
 - GitHub Releases hosts platform-specific Rust binaries
 - `.github/workflows/rust-ci.yml` runs tests on every push and pull request
 - `.github/workflows/release.yml` builds and publishes binaries on version tags
-- The npm package is a thin wrapper that downloads the appropriate binary on install
+- The npm package is published from GitHub Actions through npm Trusted Publishing (OIDC), not a long-lived `NPM_TOKEN`
+- The npm package is a thin wrapper that downloads the appropriate binary from GitHub Releases on install
 - Release tags must match the versions in `Cargo.toml` and `npm/package.json`
+- npm Trusted Publisher configuration:
+  - Publisher: `GitHub Actions`
+  - Organization or user: `hgwk`
+  - Repository: `cduo`
+  - Workflow filename: `release.yml`
+  - Environment name: empty
+
+## Roadmap
+
+- Current stable mode: transcript-sourced native `1:1` relay
+- Planned extension: configurable `1:N` fan-out and `N:N` graph routing
+- See [`docs/graph-routing-roadmap.md`](docs/graph-routing-roadmap.md)
 
 ## License
 
