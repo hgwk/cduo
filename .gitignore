@@ -2,7 +2,8 @@
 .env*
 .DS_Store
 /dist/
-/npm/bin/
+/npm/bin/*
+!/npm/bin/cduo
 
 # Project-local orchestration artifacts
 .cduo/

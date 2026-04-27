@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+
+console.error('cduo binary was not installed.');
+console.error('Reinstall with: npm install -g @hgwk/cduo@latest');
+process.exit(1);
