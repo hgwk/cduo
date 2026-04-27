@@ -11,6 +11,7 @@ use vt100::Color as VtColor;
 /// skipped so they don't overwrite the trailing half.
 pub struct ScreenWidget<'a> {
     pub screen: &'a vt100::Screen,
+    pub selection: Option<SelectionRange>,
 }
 
 impl<'a> Widget for ScreenWidget<'a> {
@@ -32,7 +33,13 @@ impl<'a> Widget for ScreenWidget<'a> {
                 }
                 let contents = cell.contents();
                 let symbol: &str = if contents.is_empty() { " " } else { &contents };
-                let style = vt_cell_style(cell);
+                let mut style = vt_cell_style(cell);
+                if self
+                    .selection
+                    .is_some_and(|selection| selection.contains(row, col))
+                {
+                    style = style.bg(Color::Cyan).fg(Color::Black);
+                }
                 let x = area.x + col;
                 let y = area.y + row;
                 if let Some(target) = buf.cell_mut(Position::new(x, y)) {
@@ -41,6 +48,46 @@ impl<'a> Widget for ScreenWidget<'a> {
                 col += if cell.is_wide() { 2 } else { 1 };
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionRange {
+    pub start_row: u16,
+    pub start_col: u16,
+    pub end_row: u16,
+    pub end_col: u16,
+}
+
+impl SelectionRange {
+    pub fn normalized(self) -> Self {
+        if (self.start_row, self.start_col) <= (self.end_row, self.end_col) {
+            self
+        } else {
+            Self {
+                start_row: self.end_row,
+                start_col: self.end_col,
+                end_row: self.start_row,
+                end_col: self.start_col,
+            }
+        }
+    }
+
+    pub fn contains(self, row: u16, col: u16) -> bool {
+        let range = self.normalized();
+        if row < range.start_row || row > range.end_row {
+            return false;
+        }
+        if range.start_row == range.end_row {
+            return col >= range.start_col && col <= range.end_col;
+        }
+        if row == range.start_row {
+            return col >= range.start_col;
+        }
+        if row == range.end_row {
+            return col <= range.end_col;
+        }
+        true
     }
 }
 

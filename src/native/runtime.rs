@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, MouseButton, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -27,11 +29,36 @@ use crate::hook::{self, HookEvent};
 use crate::native::input::{classify_key, key_to_bytes, GlobalAction};
 use crate::native::pane::{Focus, Pane, PaneId};
 use crate::native::relay;
-use crate::native::ui::{pane_pty_size, ScreenWidget};
+use crate::native::ui::{pane_pty_size, ScreenWidget, SelectionRange};
 
 const FRAME_BUDGET_MS: u64 = 16;
 const POLL_INTERVAL_MS: u64 = 8;
 const SCROLL_LINES: usize = 5;
+
+#[derive(Debug, Clone, Copy)]
+struct PaneLayout {
+    outer: Rect,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MouseSelection {
+    pane: PaneId,
+    start_row: u16,
+    start_col: u16,
+    end_row: u16,
+    end_col: u16,
+}
+
+impl MouseSelection {
+    fn range(self) -> SelectionRange {
+        SelectionRange {
+            start_row: self.start_row,
+            start_col: self.start_col,
+            end_row: self.end_row,
+            end_col: self.end_col,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeOptions {
@@ -155,12 +182,12 @@ fn run_blocking(
 ) -> Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("enter alt screen")?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
 
     let result = ui_loop(opts, &cwd, hook_port, input_tx, write_rx);
 
     let mut stdout = io::stdout();
-    let _ = execute!(stdout, LeaveAlternateScreen);
+    let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
     let _ = disable_raw_mode();
     result
 }
@@ -211,11 +238,13 @@ fn ui_loop(
     let mut last_frame = Instant::now() - Duration::from_secs(1);
     let mut dirty = true;
     let mut footer_msg = format!(
-        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
+        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · drag: copy pane text  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
         agent_program(opts.agent_a),
         agent_program(opts.agent_b),
         hook_port,
     );
+    let default_footer_msg = footer_msg.clone();
+    let mut selection: Option<MouseSelection> = None;
 
     // Per-pane buffer that mirrors what we forwarded to the agent. On every
     // \r/\n we flush it as a (pane_id, line) submission for the relay's codex
@@ -252,7 +281,7 @@ fn ui_loop(
 
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
             terminal.draw(|frame| {
-                draw(frame, &panes, focus, &footer_msg);
+                draw(frame, &panes, focus, &footer_msg, selection);
             })?;
             last_frame = Instant::now();
             dirty = false;
@@ -298,6 +327,72 @@ fn ui_loop(
                     }
                     dirty = true;
                 }
+                Event::Mouse(mouse) => {
+                    let size = terminal.size()?;
+                    let area = Rect::new(0, 0, size.width, size.height);
+                    let layouts = pane_layouts(area);
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            if let Some((pane, row, col)) =
+                                mouse_cell(mouse.column, mouse.row, layouts)
+                            {
+                                focus = Focus(pane);
+                                selection = Some(MouseSelection {
+                                    pane,
+                                    start_row: row,
+                                    start_col: col,
+                                    end_row: row,
+                                    end_col: col,
+                                });
+                                footer_msg = default_footer_msg.clone();
+                                dirty = true;
+                            }
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            if let Some(active) = selection.as_mut() {
+                                if let Some((_, row, col)) = mouse_cell_in_pane(
+                                    mouse.column,
+                                    mouse.row,
+                                    layouts,
+                                    active.pane,
+                                ) {
+                                    active.end_row = row;
+                                    active.end_col = col;
+                                    dirty = true;
+                                }
+                            }
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            if let Some(active) = selection.take() {
+                                let pane_idx = pane_id_index(active.pane);
+                                let text =
+                                    selected_text(panes[pane_idx].parser.screen(), active.range());
+                                if !text.is_empty() {
+                                    copy_to_clipboard_osc52(&mut terminal, &text)?;
+                                    footer_msg = format!(
+                                        " copied {} chars from pane {} ",
+                                        text.chars().count(),
+                                        active.pane.label().to_uppercase()
+                                    );
+                                }
+                                dirty = true;
+                            }
+                        }
+                        MouseEventKind::ScrollUp => {
+                            let pane =
+                                mouse_pane(mouse.column, mouse.row, layouts).unwrap_or(focus.0);
+                            panes[pane_id_index(pane)].scroll_up(SCROLL_LINES);
+                            dirty = true;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            let pane =
+                                mouse_pane(mouse.column, mouse.row, layouts).unwrap_or(focus.0);
+                            panes[pane_id_index(pane)].scroll_down(SCROLL_LINES);
+                            dirty = true;
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
@@ -321,13 +416,138 @@ fn ui_loop(
 }
 
 fn focus_index(focus: Focus) -> usize {
-    match focus.0 {
+    pane_id_index(focus.0)
+}
+
+fn pane_id_index(id: PaneId) -> usize {
+    match id {
         PaneId::A => 0,
         PaneId::B => 1,
     }
 }
 
-fn draw(frame: &mut ratatui::Frame, panes: &[Pane; 2], focus: Focus, footer_msg: &str) {
+fn pane_layouts(area: Rect) -> [PaneLayout; 2] {
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(2),
+    );
+    let half = body.width / 2;
+    let pane_a = Rect::new(body.x, body.y, half, body.height);
+    let pane_b = Rect::new(
+        body.x + half + 1,
+        body.y,
+        body.width.saturating_sub(half + 1),
+        body.height,
+    );
+    [PaneLayout { outer: pane_a }, PaneLayout { outer: pane_b }]
+}
+
+fn pane_inner(area: Rect) -> Rect {
+    Block::default().borders(Borders::ALL).inner(area)
+}
+
+fn mouse_pane(col: u16, row: u16, layouts: [PaneLayout; 2]) -> Option<PaneId> {
+    if point_in_rect(col, row, layouts[0].outer) {
+        Some(PaneId::A)
+    } else if point_in_rect(col, row, layouts[1].outer) {
+        Some(PaneId::B)
+    } else {
+        None
+    }
+}
+
+fn mouse_cell(col: u16, row: u16, layouts: [PaneLayout; 2]) -> Option<(PaneId, u16, u16)> {
+    mouse_cell_in_pane(col, row, layouts, PaneId::A)
+        .or_else(|| mouse_cell_in_pane(col, row, layouts, PaneId::B))
+}
+
+fn mouse_cell_in_pane(
+    col: u16,
+    row: u16,
+    layouts: [PaneLayout; 2],
+    pane: PaneId,
+) -> Option<(PaneId, u16, u16)> {
+    let layout = layouts[pane_id_index(pane)];
+    let inner = pane_inner(layout.outer);
+    if !point_in_rect(col, row, inner) {
+        let clamped_col = col.clamp(
+            inner.x,
+            inner.x.saturating_add(inner.width.saturating_sub(1)),
+        );
+        let clamped_row = row.clamp(
+            inner.y,
+            inner.y.saturating_add(inner.height.saturating_sub(1)),
+        );
+        if !point_in_rect(clamped_col, clamped_row, inner) {
+            return None;
+        }
+        return Some((pane, clamped_row - inner.y, clamped_col - inner.x));
+    }
+    Some((pane, row - inner.y, col - inner.x))
+}
+
+fn point_in_rect(col: u16, row: u16, rect: Rect) -> bool {
+    col >= rect.x
+        && col < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
+}
+
+fn selected_text(screen: &vt100::Screen, selection: SelectionRange) -> String {
+    let range = selection.normalized();
+    let mut lines = Vec::new();
+    for row in range.start_row..=range.end_row {
+        let start_col = if row == range.start_row {
+            range.start_col
+        } else {
+            0
+        };
+        let end_col = if row == range.end_row {
+            range.end_col
+        } else {
+            screen.size().1.saturating_sub(1)
+        };
+        let mut line = String::new();
+        for col in start_col..=end_col {
+            let Some(cell) = screen.cell(row, col) else {
+                continue;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let contents = cell.contents();
+            if contents.is_empty() {
+                line.push(' ');
+            } else {
+                line.push_str(&contents);
+            }
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    lines.join("\n").trim().to_string()
+}
+
+fn copy_to_clipboard_osc52(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    text: &str,
+) -> Result<()> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let backend = terminal.backend_mut();
+    use std::io::Write;
+    write!(backend, "\x1b]52;c;{encoded}\x07").context("write OSC52 clipboard")?;
+    backend.flush().context("flush OSC52 clipboard")?;
+    Ok(())
+}
+
+fn draw(
+    frame: &mut ratatui::Frame,
+    panes: &[Pane; 2],
+    focus: Focus,
+    footer_msg: &str,
+    selection: Option<MouseSelection>,
+) {
     let area = frame.area();
     if area.width < 4 || area.height < 4 {
         frame.render_widget(Paragraph::new("terminal too small"), area);
@@ -357,9 +577,25 @@ fn draw(frame: &mut ratatui::Frame, panes: &[Pane; 2], focus: Focus, footer_msg:
         header_area,
     );
 
-    render_pane(frame, &panes[0], pane_a_area, focus.0 == PaneId::A);
+    render_pane(
+        frame,
+        &panes[0],
+        pane_a_area,
+        focus.0 == PaneId::A,
+        selection
+            .filter(|selection| selection.pane == PaneId::A)
+            .map(MouseSelection::range),
+    );
     render_divider(frame, divider_area);
-    render_pane(frame, &panes[1], pane_b_area, focus.0 == PaneId::B);
+    render_pane(
+        frame,
+        &panes[1],
+        pane_b_area,
+        focus.0 == PaneId::B,
+        selection
+            .filter(|selection| selection.pane == PaneId::B)
+            .map(MouseSelection::range),
+    );
 
     frame.render_widget(
         Paragraph::new(footer_msg).style(Style::default().fg(Color::DarkGray)),
@@ -367,7 +603,13 @@ fn draw(frame: &mut ratatui::Frame, panes: &[Pane; 2], focus: Focus, footer_msg:
     );
 }
 
-fn render_pane(frame: &mut ratatui::Frame, pane: &Pane, area: Rect, focused: bool) {
+fn render_pane(
+    frame: &mut ratatui::Frame,
+    pane: &Pane,
+    area: Rect,
+    focused: bool,
+    selection: Option<SelectionRange>,
+) {
     let scroll = pane.scrollback();
     let title = if scroll > 0 {
         format!(
@@ -395,6 +637,7 @@ fn render_pane(frame: &mut ratatui::Frame, pane: &Pane, area: Rect, focused: boo
 
     let widget = ScreenWidget {
         screen: pane.parser.screen(),
+        selection,
     };
     frame.render_widget(widget, inner);
 
