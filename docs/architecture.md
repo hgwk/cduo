@@ -62,3 +62,6 @@ The UI thread owns the PTY writers. The relay task communicates with the UI via 
 - No N:N graph routing.
 
 Those can be added later, but the stable base is transcript-sourced 1:1 relay running inside a single foreground process.
+
+See [`graph-routing-roadmap.md`](graph-routing-roadmap.md) for the planned
+`1:N` and `N:N` routing extension.

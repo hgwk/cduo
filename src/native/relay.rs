@@ -72,7 +72,6 @@ pub async fn run(inputs: RelayInputs) {
                         format!("codex_input source={pane_id} text=\"{}\"", preview(&prompt)),
                     );
                     codex_pending_prompts.insert(pane_id.clone(), prompt);
-                    codex_transcripts.remove(&pane_id);
                 }
                 deliver_via_channel(
                     &log_path,
@@ -494,6 +493,89 @@ mod tests {
         assert!(
             writes.iter().any(|(_, b)| b == b"\r"),
             "expected trailing Enter byte"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_manual_input_keeps_existing_transcript_binding() {
+        let _guard = codex_home_lock().lock().await;
+
+        let temp = tempdir().unwrap();
+        let codex_home = temp.path().join("codex");
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let prev_codex_home = std::env::var_os("CODEX_HOME");
+        std::env::set_var("CODEX_HOME", &codex_home);
+
+        let started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let session_ts = chrono::Utc::now() + chrono::Duration::seconds(1);
+        let rollout = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("27")
+            .join("rollout-manual.jsonl");
+        let first_prompt = "FIRST_PROMPT";
+        let first_answer = "FIRST_CODEX_TO_A";
+        write_codex_rollout(&rollout, &cwd, session_ts, first_prompt, first_answer);
+
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "claude".to_string()),
+            ("b".to_string(), "codex".to_string()),
+        ]);
+
+        let (_hook_tx, hook_rx) = mpsc::channel::<HookEvent>(8);
+        let (input_tx, input_rx) = mpsc::channel::<(String, String)>(8);
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(32);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+        let inputs = RelayInputs {
+            cwd: cwd.clone(),
+            started_at,
+            log_path: temp.path().join("relay.log"),
+            pane_agents,
+            hook_rx,
+            input_rx,
+            write_tx,
+            shutdown_rx: shutdown_tx.subscribe(),
+        };
+
+        let handle = tokio::spawn(run(inputs));
+
+        input_tx
+            .send(("b".to_string(), first_prompt.to_string()))
+            .await
+            .unwrap();
+        let first_writes = collect_writes(&mut write_rx, Duration::from_secs(8)).await;
+        assert!(
+            first_writes
+                .iter()
+                .any(|(_, bytes)| String::from_utf8_lossy(bytes).contains(first_answer)),
+            "expected first codex answer to relay"
+        );
+
+        let second_prompt = "MANUAL_INTERVENTION_PROMPT";
+        let second_answer = "SECOND_CODEX_TO_A";
+        write_codex_rollout(&rollout, &cwd, session_ts, second_prompt, second_answer);
+        input_tx
+            .send(("b".to_string(), second_prompt.to_string()))
+            .await
+            .unwrap();
+        let second_writes = collect_writes(&mut write_rx, Duration::from_secs(8)).await;
+
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        if let Some(prev) = prev_codex_home {
+            std::env::set_var("CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        assert!(
+            second_writes.iter().any(|(target, bytes)| target == "a"
+                && String::from_utf8_lossy(bytes).contains(second_answer)),
+            "expected manual Codex input to keep the existing rollout binding and relay the next answer"
         );
     }
 }
