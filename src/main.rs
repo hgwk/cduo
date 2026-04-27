@@ -2,15 +2,14 @@ use clap::Parser;
 use std::process;
 
 mod cli;
-mod daemon;
 mod hook;
 mod message;
 mod message_bus;
+mod native;
 mod pair_router;
 mod project;
-mod pty;
+mod relay_core;
 mod session;
-mod tmux;
 mod transcripts;
 
 use cli::Commands;
@@ -19,80 +18,56 @@ use cli::Commands;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() >= 2 && args[1] == "__daemon" {
-        let session_id = args
-            .iter()
-            .position(|a| a == "--session")
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-            .unwrap_or_default();
-
-        if session_id.is_empty() {
-            eprintln!("Error: --session required for daemon mode");
-            process::exit(1);
-        }
-
-        if let Err(e) = daemon::run_daemon(session_id).await {
-            eprintln!("Daemon error: {e}");
-            process::exit(1);
-        }
-        return;
-    }
-
     let args = cli::Cli::parse();
 
     match args.command {
         Commands::Start {
             agent,
+            peer_agent,
             yolo,
             full_access,
             new_session,
         } => {
-            if let Err(e) = daemon::start(agent, yolo, full_access, new_session).await {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
+            run_native_or_exit(
+                agent,
+                peer_agent.unwrap_or(agent),
+                yolo,
+                full_access,
+                new_session,
+            )
+            .await;
         }
         Commands::Claude {
             yolo,
             full_access,
             new_session,
         } => {
-            if let Err(e) = daemon::start(cli::Agent::Claude, yolo, full_access, new_session).await
-            {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
+            run_native_or_exit(
+                cli::Agent::Claude,
+                cli::Agent::Claude,
+                yolo,
+                full_access,
+                new_session,
+            )
+            .await;
         }
         Commands::Codex {
             yolo,
             full_access,
             new_session,
         } => {
-            if let Err(e) = daemon::start(cli::Agent::Codex, yolo, full_access, new_session).await {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
-        }
-        Commands::Stop { session } => {
-            if let Err(e) = daemon::stop(session).await {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
-        }
-        Commands::Resume { session } => {
-            if let Err(e) = daemon::resume(session).await {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
+            run_native_or_exit(
+                cli::Agent::Codex,
+                cli::Agent::Codex,
+                yolo,
+                full_access,
+                new_session,
+            )
+            .await;
         }
         Commands::Status { verbose } => {
-            if let Err(e) = daemon::status(verbose).await {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
+            let _ = verbose;
+            println!("Native cduo sessions run in the foreground. No background tmux sessions are managed.");
         }
         Commands::Init { force } => {
             if let Err(e) = project::init(force) {
@@ -125,16 +100,27 @@ async fn main() {
             }
         }
         Commands::Version => {
-            println!("cduo 2.0.0");
+            println!("cduo {}", env!("CARGO_PKG_VERSION"));
         }
-        Commands::AttachPane {
-            session_id,
-            pane_id,
-        } => {
-            if let Err(e) = daemon::attach_pane(session_id, pane_id).await {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            }
-        }
+    }
+}
+
+async fn run_native_or_exit(
+    agent_a: cli::Agent,
+    agent_b: cli::Agent,
+    yolo: bool,
+    full_access: bool,
+    new_session: bool,
+) {
+    let opts = native::runtime::RuntimeOptions {
+        agent_a,
+        agent_b,
+        yolo,
+        full_access,
+        new_session,
+    };
+    if let Err(e) = native::runtime::run(opts).await {
+        eprintln!("Error: {e}");
+        process::exit(1);
     }
 }

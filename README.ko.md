@@ -2,14 +2,14 @@
 
 # cduo
 
-`cduo`는 Claude Code 또는 Codex 세션 두 개를 split `tmux` 워크스페이스 안에서 실행하되, relay 제어는 `tmux`가 아니라 `cduo`가 맡는 도구입니다.
+`cduo`는 Claude Code 또는 Codex 세션 두 개를 native split terminal UI 안에서 실행하고, agent 간 relay도 직접 제어하는 도구입니다.
 
 ## 하는 일
 
-- 두 개의 pane을 가진 `tmux` 세션 생성
+- 두 개의 pane을 가진 native terminal UI 생성
 - `claude`와 공식 OpenAI `codex` CLI 지원
 - 컨트롤러 프로세스가 두 agent를 direct PTY로 직접 실행
-- `tmux`를 제어 채널로 쓰지 않고 split pane 안에 두 세션을 그대로 보여 줌
+- `ratatui` + `vt100`으로 두 세션을 직접 렌더링
 - Claude는 `Stop` hook 기반 completion relay
 - Codex는 rollout JSONL 기반 completion relay
 - `.claude/settings.local.json`과 `CLAUDE.md`를 통한 Claude 프로젝트 컨텍스트 관리
@@ -17,7 +17,6 @@
 
 ## 요구 사항
 
-- `tmux`
 - Claude 세션용 `claude` CLI
 - Codex 세션용 공식 OpenAI `codex` CLI
 
@@ -30,7 +29,7 @@ npm install -g @openai/codex@latest
 ## 지원 정책
 
 - 공식 지원 플랫폼: macOS, Linux
-- 현재 workspace 모델: split `tmux`
+- 현재 workspace 모델: native split terminal UI
 - Windows는 현재 패키지 제품 경로에서 지원하지 않습니다
 - 설치 문제가 있으면 먼저 `cduo doctor`를 실행하세요
 
@@ -80,7 +79,7 @@ cduo codex
 - `cduo start`의 기본 agent는 Claude입니다
 - `cduo init`은 Claude 프로젝트 컨텍스트가 필요할 때만 쓰면 됩니다
 - Codex는 `cduo init` 없이도 동작합니다
-- 예전 `tmux` 토큰은 계속 받지만, 이제는 tmux가 layout만 담당합니다
+- `Ctrl-W`로 pane focus를 전환하고 `Ctrl-Q`로 종료합니다
 
 ## 일상 사용 흐름
 
@@ -89,41 +88,19 @@ cduo doctor
 cduo claude
 ```
 
-이후 같은 프로젝트에서:
-
-```bash
-cduo resume
-cduo status
-cduo stop
-```
-
-`cduo`를 비대화형 프로세스에서 시작하면 바로 attach하지 않고 workspace만 만든 뒤 `cduo resume ...` 명령을 안내합니다.
-
-운영 메모:
-
-- `cduo resume`는 실행 중인 `tmux` workspace에 붙기 때문에 대화형 터미널이 필요합니다
-- `cduo status --verbose`는 진단용으로 session id, agent, hook port, 생성 시각, pane별 attach port 정보를 더 보여 줍니다
-
-Workspace 선택 규칙:
-
-- `cduo resume`와 `cduo stop`는 먼저 현재 프로젝트에 딱 하나 있는 workspace를 우선 선택합니다
-- 현재 프로젝트에 맞는 workspace가 여러 개면 자동으로 고르지 않고 명시적으로 하나를 선택하라고 멈춥니다
-- 현재 프로젝트 workspace가 없고 전체 활성 workspace가 하나뿐이면 그 workspace를 자동으로 사용합니다
-- 명시적 selector는 `cduo status`에 보이는 session name, session id, project name, 또는 고유 prefix로 지정할 수 있습니다
+native UI는 foreground로 실행됩니다. 종료는 UI 안에서 `Ctrl-Q`를 사용합니다.
 
 ## 명령어
 
 | 명령어 | 설명 |
 | --- | --- |
-| `cduo` | Claude 기본값으로 tmux split 워크스페이스 시작 |
+| `cduo` | Claude 기본값으로 native split UI 시작 |
 | `cduo help` 또는 `cduo --help` | 명령 도움말 표시 |
-| `cduo start [claude\|codex] [yolo\|--yolo\|--full-access] [--new]` | 선택한 agent workspace를 시작하거나 다시 연결 |
-| `cduo claude [yolo\|--yolo\|--full-access] [--new]` | Claude workspace를 시작하거나 다시 연결 |
-| `cduo codex [yolo\|--yolo\|--full-access] [--new]` | Codex workspace를 시작하거나 다시 연결 |
+| `cduo start [claude\|codex] [claude\|codex] [--yolo\|--full-access] [--new]` | native split UI를 시작하며, 두 번째 agent는 pane B를 선택 |
+| `cduo claude [--yolo\|--full-access] [--new]` | Claude/Claude native pair 시작 |
+| `cduo codex [--yolo\|--full-access] [--new]` | Codex/Codex native pair 시작 |
 | `cduo doctor` | 머신 설정과 현재 프로젝트 준비 상태 점검 |
-| `cduo resume [session]` | 현재 프로젝트 workspace 또는 지정한 workspace에 다시 연결 |
-| `cduo status [--verbose]` | 활성 cduo workspace 표시 |
-| `cduo stop [session]` | 현재 프로젝트 workspace 또는 지정한 workspace 중지 |
+| `cduo status [--verbose]` | native foreground-session 동작 안내 |
 | `cduo init` | Claude `Stop` hook을 보장하고 `CLAUDE.md`에 orchestration 내용을 생성하거나 앞에 추가 |
 | `cduo init --force` | `.claude/settings.local.json`과 `CLAUDE.md`를 덮어씀 |
 | `cduo backup` | 현재 프로젝트의 orchestration 관련 파일 백업 |
@@ -133,14 +110,12 @@ Workspace 선택 규칙:
 
 ## 인자 규칙
 
-- 한 세션에는 agent를 하나만 선택할 수 있습니다
-- `yolo`와 `--yolo`는 같은 의미입니다
-- `yolo` 또는 `--yolo`는 `--full-access`와 함께 쓸 수 없습니다
-- 기본적으로 `cduo claude`와 `cduo codex`는 같은 프로젝트, 같은 agent, 같은 접근 모드의 기존 workspace에 다시 연결합니다
+- `cduo start`는 pane A용 agent 하나와 pane B용 peer agent 하나를 선택적으로 받습니다
+- `--yolo`는 `--full-access`와 함께 쓸 수 없습니다
+- 기본적으로 `cduo claude`, `cduo codex`, 혼합 agent `cduo start claude codex`는 같은 프로젝트, 같은 agent 조합, 같은 접근 모드의 기존 workspace에만 다시 연결합니다
+- mixed-agent workspace는 `claude+codex` 같은 결합 라벨을 쓰므로, `cduo claude` 대신 같은 형태의 `cduo start claude codex`로 다시 연결합니다
 - 같은 프로젝트와 같은 agent로 새 workspace를 일부러 더 만들고 싶을 때만 `--new`를 사용합니다
-- `start` 뒤에서는 `claude`나 `codex`를 뒤쪽 어느 위치에 둬도 됩니다
 - 예상하지 않은 추가 start 인자는 무시하지 않고 오류로 거부합니다
-- `tmux`는 하위 호환용으로만 남아 있고 동작은 바꾸지 않습니다
 
 유효한 예시:
 
@@ -149,8 +124,9 @@ cduo
 cduo update
 cduo start
 cduo start codex
-cduo start tmux codex
-cduo claude yolo
+cduo start claude codex
+cduo start --new claude codex
+cduo claude --yolo
 cduo codex --yolo
 cduo codex --full-access
 cduo codex --new
@@ -159,23 +135,21 @@ cduo codex --new
 거부되는 예시:
 
 ```bash
-cduo start claude codex
+cduo start claude codex claude
 cduo codex nonsense
 ```
 
 ## 접근 모드
 
 - `cduo claude --full-access`는 Claude를 `--permission-mode bypassPermissions`로 실행합니다
-- `cduo claude yolo`는 Claude를 `--dangerously-skip-permissions`로 실행합니다
+- `cduo claude --yolo`는 Claude를 `--dangerously-skip-permissions`로 실행합니다
 - `cduo codex --full-access`는 설치된 공식 OpenAI CLI가 제공하는 full-access 대응 모드로 실행합니다
-- `cduo codex yolo`는 설치된 공식 OpenAI CLI가 제공하는 auto-approval 대응 모드로 실행합니다
+- `cduo codex --yolo`는 설치된 공식 OpenAI CLI가 제공하는 auto-approval 대응 모드로 실행합니다
 
-Codex 옵션 매핑은 설치된 공식 CLI 버전에 따라 달라집니다.
+Codex 옵션 매핑은 설치된 공식 CLI 기준입니다.
 
-- 최신 계열은 `--yolo`, `--sandbox danger-full-access`를 사용합니다
-- 구형 공식 계열은 `--approval-mode full-auto`, `--dangerously-auto-approve-everything`를 사용합니다
-
-`cduo`는 실행 전에 두 공식 변형을 모두 감지합니다.
+- `--full-access`는 Codex를 `--sandbox danger-full-access --ask-for-approval never`로 실행합니다
+- `--yolo`는 Codex를 `--dangerously-bypass-approvals-and-sandbox`로 실행합니다
 
 지원하는 OpenAI Codex CLI 옵션 참고 문서:
 
@@ -214,9 +188,9 @@ your-project/
 
 ## Relay 구조
 
-1. `cduo`가 내장 daemon을 시작해 workspace를 관리합니다.
-2. daemon이 선택된 agent를 `TERMINAL_ID`와 `ORCHESTRATION_PORT`를 가진 direct PTY 두 개로 실행합니다.
-3. `tmux`는 split UI만 제공합니다.
+1. `cduo`가 native split-pane TUI를 시작합니다.
+2. native runtime이 선택된 agent를 `TERMINAL_ID`와 `ORCHESTRATION_PORT`를 가진 direct PTY 두 개로 실행합니다.
+3. `ratatui` + `vt100`이 두 PTY를 직접 렌더링합니다. tmux fallback은 없습니다.
 4. Claude는 `Stop` hook으로 completion 이벤트와 transcript 경로를 보냅니다.
 5. Codex completion은 현재 workspace의 Codex rollout JSONL에서 읽습니다.
 6. `MessageBus`가 source/target/content 중복 전송을 막고 `PairRouter`가 상대 pane으로 전달합니다.
@@ -272,29 +246,17 @@ npm install -g @hgwk/cduo@latest
 메시지 relay가 안 되는 경우:
 
 - 먼저 `cduo doctor`로 런타임 상태를 확인
-- `cduo status`로 workspace와 controller가 살아 있는지 먼저 확인
-- 더 깊은 진단이 필요하면 `cduo status --verbose`를 실행
-- `cduo start`, `cduo resume`, `cduo status`는 진행 전에 stale workspace 메타데이터를 자동 정리합니다
+- native UI에서 두 pane이 모두 보이는지 확인
 - Claude는 relay 서버 로그에 hook 이벤트가 찍히는지 확인
 - Codex는 현재 프로젝트에 대응하는 최근 rollout JSONL이 `~/.codex/sessions/` 아래 생기는지 확인
 - target pane이 stdin을 받을 수 있어야 하며, `cduo`는 relay 텍스트를 쓴 뒤 Enter를 보냅니다
-- `cduo`를 업그레이드했다면 새 controller가 반영되도록 cduo 세션을 다시 시작해야 합니다
-- `tmux` 세션이 아직 살아 있는지 확인
-- 같은 프로젝트에서는 보통 `cduo resume`만으로 기대한 workspace에 다시 붙어야 합니다
-- workspace 시작 뒤 attach가 실패해도 workspace는 계속 살아 있는 경우가 많으니, 출력된 `cduo resume ...` 명령을 대화형 터미널에서 다시 실행하세요
+- `cduo`를 업그레이드했다면 새 바이너리가 반영되도록 native UI를 다시 시작해야 합니다
 
 Codex가 설치돼 있는데 `cduo codex`가 거부되는 경우:
 
 - `codex --help`에 최신 공식 옵션(`--yolo`, `--ask-for-approval`, `--sandbox`)이나 구형 공식 옵션(`--approval-mode`, `full-auto`, `--dangerously-auto-approve-everything`)이 보이는지 확인
 - 아니라면 `npm install -g @openai/codex@latest`로 공식 CLI 설치 또는 업데이트
 - `PATH`에서 `codex`가 OpenAI 바이너리를 가리키는지 확인
-
-`tmux` layout mode가 바로 실패하는 경우:
-
-- macOS: `brew install tmux`
-- Ubuntu/Debian: `sudo apt install tmux`
-- Fedora: `sudo dnf install tmux`
-- Arch: `sudo pacman -S tmux`
 
 터미널 시작 위치가 이상한 경우:
 
@@ -327,11 +289,7 @@ cargo build --release
 cargo test
 ```
 
-로컬 E2E 스모크 테스트:
-
-```bash
-scripts/e2e-test.sh
-```
+현재 자동 검증은 `cargo test`만 사용합니다 (단위 테스트 + `src/native/relay.rs`의 인프로세스 relay 통합 테스트). foreground native 런타임을 대상으로 한 전체 TUI E2E 하네스는 현재 연결되어 있지 않습니다.
 
 릴리즈 바이너리는 `target/release/cduo`에 생성됩니다.
 
@@ -341,24 +299,27 @@ scripts/e2e-test.sh
 cduo/
 ├── src/
 │   ├── main.rs           # CLI 진입점
-│   ├── cli.rs            # 명령 정의와 파싱
-│   ├── daemon.rs         # 내장 daemon과 세션 관리
-│   ├── hook.rs           # Claude HTTP hook 서버
-│   ├── pty.rs            # PTY 관리(portable-pty)
+│   ├── cli.rs            # 명령 정의/파싱
+│   ├── native/           # native split-pane TUI 런타임 (PTY + ratatui + relay 루프)
+│   │   ├── runtime.rs    # 두 pane 메인 루프; hook 서버와 relay 태스크 기동
+│   │   ├── pane.rs       # pane별 PTY + vt100 파서
+│   │   ├── ui.rs         # vt100 → ratatui 렌더링
+│   │   ├── input.rs      # 키 인코딩과 전역 동작 분류
+│   │   └── relay.rs      # 인프로세스 relay 루프; 메시지 버스 구동
+│   ├── relay_core.rs     # transcript 읽기 / codex rollout 발견 / dedup 등 순수 helper
+│   ├── hook.rs           # Claude Stop 이벤트용 HTTP hook 서버
 │   ├── message.rs        # relay 메시지 모델
 │   ├── message_bus.rs    # 중복 제거 메시지 버스
 │   ├── pair_router.rs    # 1:1 라우팅 정책
-│   ├── session.rs        # 세션 메타데이터와 저장
-│   ├── tmux.rs           # tmux 세션 헬퍼
-│   └── transcripts/      # 에이전트 transcript 리더
+│   ├── session.rs        # 상태 디렉토리 결정 helper
+│   ├── project.rs        # `init` / `doctor` / `backup` / `uninstall`
+│   └── transcripts/      # 에이전트 transcript 리더 (claude, codex)
 ├── templates/
 │   ├── claude-settings.json
 │   └── orchestration.md
 ├── npm/
 │   ├── install.js
 │   └── package.json
-├── scripts/
-│   └── e2e-test.sh
 ├── docs/
 │   └── architecture.md
 ├── Cargo.toml

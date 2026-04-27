@@ -1,6 +1,6 @@
 # cduo
 
-Paired AI agent execution for Claude Code and OpenAI Codex in a split tmux workspace.
+Paired AI agent execution for Claude Code and OpenAI Codex in a native split-pane terminal UI.
 
 This npm package installs the platform-specific `cduo` Rust binary from GitHub Releases.
 

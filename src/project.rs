@@ -158,16 +158,6 @@ pub fn doctor() -> Result<()> {
         failed = true;
     }
 
-    let tmux = which("tmux");
-    println!(
-        "{} tmux: {}",
-        if tmux.is_some() { "✓" } else { "✗" },
-        tmux.as_deref().unwrap_or("not found")
-    );
-    if tmux.is_none() {
-        failed = true;
-    }
-
     let claude = which("claude");
     println!(
         "{} Claude CLI: {}",

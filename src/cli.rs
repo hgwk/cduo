@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "cduo")]
 #[command(about = "Run Claude Code and the OpenAI Codex CLI side by side")]
-#[command(version = "2.0.0")]
+#[command(version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -16,6 +16,9 @@ pub enum Commands {
         #[arg(value_enum, default_value = "claude")]
         agent: Agent,
 
+        #[arg(value_enum)]
+        peer_agent: Option<Agent>,
+
         #[arg(long, default_value_t = false)]
         yolo: bool,
 
@@ -26,7 +29,7 @@ pub enum Commands {
         new_session: bool,
     },
 
-    #[command(about = "Start or reconnect to a Claude workspace")]
+    #[command(about = "Start a Claude/Claude native pair")]
     Claude {
         #[arg(long, default_value_t = false)]
         yolo: bool,
@@ -38,7 +41,7 @@ pub enum Commands {
         new_session: bool,
     },
 
-    #[command(about = "Start or reconnect to a Codex workspace")]
+    #[command(about = "Start a Codex/Codex native pair")]
     Codex {
         #[arg(long, default_value_t = false)]
         yolo: bool,
@@ -50,13 +53,7 @@ pub enum Commands {
         new_session: bool,
     },
 
-    #[command(about = "Stop the current or named workspace")]
-    Stop { session: Option<String> },
-
-    #[command(about = "Resume a workspace")]
-    Resume { session: Option<String> },
-
-    #[command(about = "Show active cduo workspaces")]
+    #[command(about = "Explain native foreground session behavior")]
     Status {
         #[arg(long, short)]
         verbose: bool,
@@ -82,14 +79,90 @@ pub enum Commands {
 
     #[command(about = "Show version")]
     Version,
-
-    #[command(name = "__attach-pane", hide = true)]
-    AttachPane { session_id: String, pane_id: String },
 }
 
-#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum Agent {
     #[default]
     Claude,
     Codex,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parses_start_with_mixed_agents() {
+        let cli = Cli::parse_from(["cduo", "start", "claude", "codex"]);
+
+        match cli.command {
+            Commands::Start {
+                agent, peer_agent, ..
+            } => {
+                assert_eq!(agent, Agent::Claude);
+                assert_eq!(peer_agent, Some(Agent::Codex));
+            }
+            _ => panic!("expected start command"),
+        }
+    }
+
+    #[test]
+    fn parses_start_flags_before_agent() {
+        let cli = Cli::parse_from(["cduo", "start", "--new", "codex"]);
+
+        match cli.command {
+            Commands::Start {
+                agent,
+                peer_agent,
+                new_session,
+                ..
+            } => {
+                assert_eq!(agent, Agent::Codex);
+                assert_eq!(peer_agent, None);
+                assert!(new_session);
+            }
+            _ => panic!("expected start command"),
+        }
+    }
+
+    #[test]
+    fn parses_start_access_flags_between_agents() {
+        let cli = Cli::parse_from(["cduo", "start", "claude", "--yolo", "codex"]);
+
+        match cli.command {
+            Commands::Start {
+                agent,
+                peer_agent,
+                yolo,
+                full_access,
+                ..
+            } => {
+                assert_eq!(agent, Agent::Claude);
+                assert_eq!(peer_agent, Some(Agent::Codex));
+                assert!(yolo);
+                assert!(!full_access);
+            }
+            _ => panic!("expected start command"),
+        }
+
+        let cli = Cli::parse_from(["cduo", "start", "codex", "--full-access"]);
+
+        match cli.command {
+            Commands::Start {
+                agent,
+                peer_agent,
+                yolo,
+                full_access,
+                ..
+            } => {
+                assert_eq!(agent, Agent::Codex);
+                assert_eq!(peer_agent, None);
+                assert!(!yolo);
+                assert!(full_access);
+            }
+            _ => panic!("expected start command"),
+        }
+    }
 }

@@ -35,19 +35,19 @@ pub async fn run_hook_server(
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[hook] Failed to bind to {addr}: {e}");
+            tracing::error!(target: "cduo::hook", "failed to bind to {addr}: {e}");
             return;
         }
     };
 
-    println!("[hook] Server listening on {addr}");
+    tracing::info!(target: "cduo::hook", "server listening on {addr}");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             let _ = shutdown.recv().await;
         })
         .await
-        .unwrap_or_else(|e| eprintln!("[hook] Server error: {e}"));
+        .unwrap_or_else(|e| tracing::error!(target: "cduo::hook", "server error: {e}"));
 }
 
 async fn handle_hook(

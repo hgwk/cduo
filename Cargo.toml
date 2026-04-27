@@ -9,6 +9,7 @@ repository = "https://github.com/hgwk/cduo"
 keywords = ["claude", "codex", "ai", "terminal", "orchestration"]
 categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.75"
+default-run = "cduo"
 
 [[bin]]
 name = "cduo"
@@ -23,12 +24,15 @@ portable-pty = "0.9"
 axum = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 directories = "5.0"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
 sha2 = "0.10"
 anyhow = "1.0"
 libc = "0.2"
 crossterm = "0.27"
+ratatui = "0.28"
+vt100 = "0.15"
 
 [dev-dependencies]
 tokio-test = "0.4"
