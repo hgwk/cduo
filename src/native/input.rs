@@ -107,8 +107,8 @@ pub fn classify_key(key: KeyEvent) -> GlobalAction {
                 GlobalAction::FocusNext
             }
         }
-        KeyCode::PageUp if shift => GlobalAction::ScrollUp,
-        KeyCode::PageDown if shift => GlobalAction::ScrollDown,
+        KeyCode::PageUp => GlobalAction::ScrollUp,
+        KeyCode::PageDown => GlobalAction::ScrollDown,
         _ => GlobalAction::Forward,
     }
 }
@@ -161,13 +161,13 @@ mod tests {
     }
 
     #[test]
-    fn shift_page_keys_scroll() {
+    fn page_keys_scroll() {
         assert_eq!(
-            classify_key(key(KeyCode::PageUp, KeyModifiers::SHIFT)),
+            classify_key(key(KeyCode::PageUp, KeyModifiers::NONE)),
             GlobalAction::ScrollUp
         );
         assert_eq!(
-            classify_key(key(KeyCode::PageDown, KeyModifiers::SHIFT)),
+            classify_key(key(KeyCode::PageDown, KeyModifiers::NONE)),
             GlobalAction::ScrollDown
         );
     }

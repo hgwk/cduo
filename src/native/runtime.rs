@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyEventKind};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -156,12 +155,12 @@ fn run_blocking(
 ) -> Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
+    execute!(stdout, EnterAlternateScreen).context("enter alt screen")?;
 
     let result = ui_loop(opts, &cwd, hook_port, input_tx, write_rx);
 
     let mut stdout = io::stdout();
-    let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
+    let _ = execute!(stdout, LeaveAlternateScreen);
     let _ = disable_raw_mode();
     result
 }
@@ -212,7 +211,7 @@ fn ui_loop(
     let mut last_frame = Instant::now() - Duration::from_secs(1);
     let mut dirty = true;
     let mut footer_msg = format!(
-        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · Ctrl-Q: quit ",
+        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
         agent_program(opts.agent_a),
         agent_program(opts.agent_b),
         hook_port,
@@ -299,37 +298,6 @@ fn ui_loop(
                     }
                     dirty = true;
                 }
-                Event::Mouse(mouse) => {
-                    let size = terminal.size()?;
-                    let target = pane_index_at(
-                        mouse.column,
-                        mouse.row,
-                        Rect::new(0, 0, size.width, size.height),
-                    );
-                    match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            let idx = target.unwrap_or_else(|| focus_index(focus));
-                            let _ = panes[idx].write(b"\x1b[5~");
-                            dirty = true;
-                        }
-                        MouseEventKind::ScrollDown => {
-                            let idx = target.unwrap_or_else(|| focus_index(focus));
-                            let _ = panes[idx].write(b"\x1b[6~");
-                            dirty = true;
-                        }
-                        MouseEventKind::Down(_) => {
-                            if let Some(idx) = target {
-                                focus = if idx == 0 {
-                                    Focus(PaneId::A)
-                                } else {
-                                    Focus(PaneId::B)
-                                };
-                                dirty = true;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
                 _ => {}
             }
         }
@@ -356,24 +324,6 @@ fn focus_index(focus: Focus) -> usize {
     match focus.0 {
         PaneId::A => 0,
         PaneId::B => 1,
-    }
-}
-
-fn pane_index_at(col: u16, row: u16, area: Rect) -> Option<usize> {
-    if area.width < 4 || area.height < 4 {
-        return None;
-    }
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
-    if row < body.y || row >= body.y + body.height {
-        return None;
-    }
-    let half = body.width / 2;
-    if col < body.x + half {
-        Some(0)
-    } else if col > body.x + half {
-        Some(1)
-    } else {
-        None
     }
 }
 

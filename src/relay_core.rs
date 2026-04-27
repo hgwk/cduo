@@ -107,11 +107,60 @@ pub fn codex_session_meta(path: &Path) -> Option<(PathBuf, chrono::DateTime<chro
 }
 
 pub fn normalize_prompt_text(value: &str) -> String {
-    value.replace('\r', "").trim().to_string()
+    let mut out = Vec::new();
+    let mut chars = value.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\u{7f}' | '\u{8}' => {
+                out.pop();
+            }
+            '\x1b' => {
+                skip_escape_sequence(&mut chars);
+            }
+            '\r' => {}
+            '\n' => out.push(ch),
+            ch if ch.is_control() => {}
+            ch => out.push(ch),
+        }
+    }
+
+    out.into_iter().collect::<String>().trim().to_string()
+}
+
+fn skip_escape_sequence<I>(chars: &mut std::iter::Peekable<I>)
+where
+    I: Iterator<Item = char>,
+{
+    match chars.peek().copied() {
+        Some('[') => {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ('@'..='~').contains(&ch) {
+                    break;
+                }
+            }
+        }
+        Some(']') => {
+            chars.next();
+            let mut prev = '\0';
+            for ch in chars.by_ref() {
+                if ch == '\u{7}' || (prev == '\x1b' && ch == '\\') {
+                    break;
+                }
+                prev = ch;
+            }
+        }
+        Some(_) => {
+            chars.next();
+        }
+        None => {}
+    }
 }
 
 pub fn codex_transcript_contains_user_prompt(path: &Path, expected_prompt: &str) -> bool {
     let expected_prompt = normalize_prompt_text(expected_prompt);
+    let compact_expected = compact_prompt_text(&expected_prompt);
     if expected_prompt.is_empty() {
         return false;
     }
@@ -124,9 +173,21 @@ pub fn codex_transcript_contains_user_prompt(path: &Path, expected_prompt: &str)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .any(|entry| {
-            codex_user_text_from_entry(&entry)
-                .is_some_and(|text| text == expected_prompt || text.contains(&expected_prompt))
+            codex_user_text_from_entry(&entry).is_some_and(|text| {
+                let compact_text = compact_prompt_text(&text);
+                text == expected_prompt
+                    || text.contains(&expected_prompt)
+                    || expected_prompt.contains(&text)
+                    || (!compact_text.is_empty()
+                        && !compact_expected.is_empty()
+                        && (compact_text.contains(&compact_expected)
+                            || compact_expected.contains(&compact_text)))
+            })
         })
+}
+
+fn compact_prompt_text(value: &str) -> String {
+    value.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 pub fn codex_user_text_from_entry(entry: &serde_json::Value) -> Option<String> {
@@ -191,6 +252,28 @@ pub fn discover_recent_codex_transcript(
         })
         .max_by_key(|(modified, _)| *modified)
         .map(|(_, path)| path)
+}
+
+pub fn discover_recent_codex_transcripts(
+    cwd: &Path,
+    started_at: chrono::DateTime<chrono::Utc>,
+) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_jsonl_files(&codex_sessions_root(), &mut files);
+
+    let mut candidates = files
+        .into_iter()
+        .filter_map(|path| {
+            let (session_cwd, session_started_at) = codex_session_meta(&path)?;
+            if session_cwd != cwd || session_started_at < started_at {
+                return None;
+            }
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            Some((session_started_at, modified, path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(session_started_at, modified, _)| (*session_started_at, *modified));
+    candidates.into_iter().map(|(_, _, path)| path).collect()
 }
 
 pub fn count_claude_stop_hook_summaries(path: &Path) -> usize {
@@ -330,6 +413,30 @@ mod tests {
     fn normalize_prompt_text_trims_and_strips_cr() {
         assert_eq!(normalize_prompt_text("  hi\r\n  "), "hi");
         assert_eq!(normalize_prompt_text("\r\rok"), "ok");
+    }
+
+    #[test]
+    fn normalize_prompt_text_applies_backspace_and_strips_control_noise() {
+        assert_eq!(normalize_prompt_text("gk\u{7f}\u{7f}하이"), "하이");
+        assert_eq!(
+            normalize_prompt_text("\x1b[?1;2;4c\x1b]10;rgb:eded/ecec/eeee\x07하이"),
+            "하이"
+        );
+    }
+
+    #[test]
+    fn codex_prompt_match_tolerates_whitespace_changes() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello\nfrom codex"}]}}"#,
+        )
+        .unwrap();
+
+        assert!(codex_transcript_contains_user_prompt(
+            file.path(),
+            "hello from codex"
+        ));
     }
 
     #[test]

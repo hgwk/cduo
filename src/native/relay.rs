@@ -19,9 +19,10 @@ use crate::message::Message;
 use crate::message_bus::MessageBus;
 use crate::pair_router::PairRouter;
 use crate::relay_core::{
-    count_claude_stop_hook_summaries, discover_recent_codex_transcript, drop_seen_signature,
-    log_event, normalize_prompt_text, pane_uses_claude, pane_uses_codex, preview,
-    publish_transcript_output, read_claude_transcript_with_retry, submit_delay_for_agent,
+    count_claude_stop_hook_summaries, discover_recent_codex_transcript,
+    discover_recent_codex_transcripts, drop_seen_signature, log_event, normalize_prompt_text,
+    pane_uses_claude, pane_uses_codex, preview, publish_transcript_output,
+    read_claude_transcript_with_retry, submit_delay_for_agent,
 };
 use crate::transcripts::{self, TranscriptOutput};
 
@@ -243,9 +244,29 @@ fn ensure_codex_transcript_local(
         return;
     }
 
+    let used_by_other_pane = transcripts
+        .iter()
+        .filter(|(source, _)| source.as_str() != pane_id)
+        .map(|(_, path)| path.clone())
+        .collect::<std::collections::HashSet<_>>();
     let excluded = std::collections::HashSet::new();
     let Some(path) = discover_recent_codex_transcript(cwd, started_at, &excluded, expected_prompt)
     else {
+        let fallback = discover_recent_codex_transcripts(cwd, started_at)
+            .into_iter()
+            .rev()
+            .find(|path| !used_by_other_pane.contains(path));
+        if let Some(path) = fallback {
+            log_event(
+                log_path,
+                format!(
+                    "codex_transcript_fallback source={pane_id} path={} prompt=\"{}\"",
+                    path.display(),
+                    preview(expected_prompt)
+                ),
+            );
+            transcripts.insert(pane_id.to_string(), path);
+        }
         return;
     };
     log_event(
