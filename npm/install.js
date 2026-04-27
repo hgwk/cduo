@@ -91,7 +91,8 @@ function completeInstall() {
     step(3, `ready ${color.green('cduo')}`);
     log('');
     log(`${color.green('Installed.')} Try: ${color.cyan('cduo claude codex')}`);
-    log(color.dim('Switch panes: Ctrl-W    Quit: Ctrl-Q'));
+    log(color.dim('Switch: Ctrl-W    Scroll: PageUp/PageDown    Quit: Ctrl-Q'));
+    log(color.dim('Drag inside one pane to copy text.'));
     log('');
   });
 }

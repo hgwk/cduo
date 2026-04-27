@@ -86,7 +86,14 @@ cduo doctor
 cduo start claude codex
 ```
 
-Use `Ctrl-W` to switch focus between panes and `Ctrl-Q` to quit the native UI.
+Native UI controls:
+
+- `Ctrl-W`: switch focus between panes
+- `Ctrl-Shift-W`: switch focus in the opposite direction
+- `Ctrl-Q`: quit the native UI and stop both agents
+- `PageUp` / `PageDown`: scroll the focused pane
+- Mouse wheel: scroll the pane under the cursor
+- Mouse drag: select text inside one pane; release to copy the selected text via OSC52
 
 ## Commands
 
@@ -201,8 +208,10 @@ If the default local range is already busy, `cduo` automatically falls back to O
 Override the preferred base port if needed:
 
 ```bash
-PORT=8080 cduo codex
+CDUO_PORT=8080 cduo codex
 ```
+
+`PORT` is also accepted for hosting environments that already provide it, but `CDUO_PORT` takes precedence.
 
 ## Backup, Uninstall, and Update
 

@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -97,7 +97,7 @@ mod tests {
     fn parses_start_with_mixed_agents() {
         let cli = Cli::parse_from(["cduo", "start", "claude", "codex"]);
 
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Start {
                 agent, peer_agent, ..
             } => {
@@ -112,7 +112,7 @@ mod tests {
     fn parses_start_flags_before_agent() {
         let cli = Cli::parse_from(["cduo", "start", "--new", "codex"]);
 
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Start {
                 agent,
                 peer_agent,
@@ -131,7 +131,7 @@ mod tests {
     fn parses_start_access_flags_between_agents() {
         let cli = Cli::parse_from(["cduo", "start", "claude", "--yolo", "codex"]);
 
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Start {
                 agent,
                 peer_agent,
@@ -149,7 +149,7 @@ mod tests {
 
         let cli = Cli::parse_from(["cduo", "start", "codex", "--full-access"]);
 
-        match cli.command {
+        match cli.command.unwrap() {
             Commands::Start {
                 agent,
                 peer_agent,
@@ -164,5 +164,11 @@ mod tests {
             }
             _ => panic!("expected start command"),
         }
+    }
+
+    #[test]
+    fn bare_cduo_defaults_to_start() {
+        let cli = Cli::parse_from(["cduo"]);
+        assert!(cli.command.is_none());
     }
 }

@@ -212,7 +212,7 @@ pub fn backup() -> Result<()> {
 }
 
 pub fn update() -> Result<()> {
-    println!("cduo update — run `cargo install cduo` or reinstall via npm");
+    println!("cduo update — run `npm install -g @hgwk/cduo@latest`");
     Ok(())
 }
 

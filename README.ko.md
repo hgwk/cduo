@@ -99,6 +99,15 @@ cduo start claude codex
 
 native UI는 foreground로 실행됩니다. 종료는 UI 안에서 `Ctrl-Q`를 사용합니다.
 
+native UI 조작:
+
+- `Ctrl-W`: pane focus 전환
+- `Ctrl-Shift-W`: 반대 방향으로 pane focus 전환
+- `Ctrl-Q`: native UI 종료 및 두 agent 중지
+- `PageUp` / `PageDown`: 현재 focus pane 스크롤
+- 마우스 휠: 커서 아래 pane 스크롤
+- 마우스 드래그: 한 pane 안에서만 텍스트 선택, 버튼을 놓으면 OSC52로 클립보드 복사
+
 ## 명령어
 
 | 명령어 | 설명 |
@@ -212,8 +221,10 @@ your-project/
 필요하면 선호 기본 포트를 바꿀 수 있습니다:
 
 ```bash
-PORT=8080 cduo codex
+CDUO_PORT=8080 cduo codex
 ```
+
+호스팅 환경 호환을 위해 `PORT`도 받지만, `CDUO_PORT`가 우선합니다.
 
 ## 백업과 제거
 

@@ -112,7 +112,7 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
     // Validate flags before allocating anything else.
     AccessMode::from_flags(opts.yolo, opts.full_access)?;
 
-    let hook_port = find_available_port(53333).await?;
+    let hook_port = find_available_port(preferred_hook_port()).await?;
     let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(64);
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let (input_tx, input_rx) = mpsc::channel::<(String, String)>(64);
@@ -171,6 +171,14 @@ async fn find_available_port(start: u16) -> Result<u16> {
         }
     }
     anyhow::bail!("No available port found in range {start}-{}", start + 99)
+}
+
+fn preferred_hook_port() -> u16 {
+    std::env::var("CDUO_PORT")
+        .or_else(|_| std::env::var("PORT"))
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(53333)
 }
 
 fn run_blocking(
@@ -693,6 +701,12 @@ fn capture_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn access_mode_rejects_conflicting_flags() {
@@ -743,6 +757,25 @@ mod tests {
     fn agent_args_default_is_empty() {
         assert!(agent_args(Agent::Claude, AccessMode::Default).is_empty());
         assert!(agent_args(Agent::Codex, AccessMode::Default).is_empty());
+    }
+
+    #[test]
+    fn preferred_hook_port_defaults_when_env_missing_or_invalid() {
+        let _guard = env_lock();
+        std::env::remove_var("CDUO_PORT");
+        std::env::set_var("PORT", "not-a-port");
+        assert_eq!(preferred_hook_port(), 53333);
+        std::env::remove_var("PORT");
+    }
+
+    #[test]
+    fn preferred_hook_port_accepts_cduo_port_over_port() {
+        let _guard = env_lock();
+        std::env::set_var("PORT", "12345");
+        std::env::set_var("CDUO_PORT", "23456");
+        assert_eq!(preferred_hook_port(), 23456);
+        std::env::remove_var("CDUO_PORT");
+        std::env::remove_var("PORT");
     }
 
     #[tokio::test]

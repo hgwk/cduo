@@ -20,7 +20,13 @@ async fn main() {
 
     let args = cli::Cli::parse();
 
-    match args.command {
+    match args.command.unwrap_or(Commands::Start {
+        agent: cli::Agent::Claude,
+        peer_agent: None,
+        yolo: false,
+        full_access: false,
+        new_session: false,
+    }) {
         Commands::Start {
             agent,
             peer_agent,
