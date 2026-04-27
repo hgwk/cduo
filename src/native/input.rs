@@ -86,6 +86,10 @@ pub enum GlobalAction {
     FocusNext,
     /// Move focus to the previous pane.
     FocusPrev,
+    /// Scroll the focused pane upward through scrollback.
+    ScrollUp,
+    /// Scroll the focused pane downward toward the live screen.
+    ScrollDown,
 }
 
 /// Classify a key press at the runtime level. Ctrl-Q quits, Ctrl-W cycles
@@ -103,6 +107,8 @@ pub fn classify_key(key: KeyEvent) -> GlobalAction {
                 GlobalAction::FocusNext
             }
         }
+        KeyCode::PageUp if shift => GlobalAction::ScrollUp,
+        KeyCode::PageDown if shift => GlobalAction::ScrollDown,
         _ => GlobalAction::Forward,
     }
 }
@@ -151,6 +157,18 @@ mod tests {
         assert_eq!(
             classify_key(key(KeyCode::Char('a'), KeyModifiers::NONE)),
             GlobalAction::Forward
+        );
+    }
+
+    #[test]
+    fn shift_page_keys_scroll() {
+        assert_eq!(
+            classify_key(key(KeyCode::PageUp, KeyModifiers::SHIFT)),
+            GlobalAction::ScrollUp
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::PageDown, KeyModifiers::SHIFT)),
+            GlobalAction::ScrollDown
         );
     }
 

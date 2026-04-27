@@ -6,6 +6,8 @@ use std::thread;
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 
+const SCROLLBACK_LINES: usize = 2_000;
+
 /// Identifies one of the two panes the runtime owns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PaneId {
@@ -100,7 +102,7 @@ impl Pane {
             child,
             writer,
             bytes_rx: rx,
-            parser: vt100::Parser::new(rows, cols, 0),
+            parser: vt100::Parser::new(rows, cols, SCROLLBACK_LINES),
         })
     }
 
@@ -143,6 +145,20 @@ impl Pane {
             pixel_height: 0,
         });
         self.parser.set_size(rows, cols);
+    }
+
+    pub fn scrollback(&self) -> usize {
+        self.parser.screen().scrollback()
+    }
+
+    pub fn scroll_up(&mut self, rows: usize) {
+        let next = self.scrollback().saturating_add(rows);
+        self.parser.set_scrollback(next);
+    }
+
+    pub fn scroll_down(&mut self, rows: usize) {
+        let next = self.scrollback().saturating_sub(rows);
+        self.parser.set_scrollback(next);
     }
 
     /// Best-effort kill of the child process.
