@@ -3,7 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::cli::SplitLayout;
-use crate::native::layout::pane_layouts;
+use crate::native::layout::pane_layouts_for_view;
 use crate::native::pane::{Focus, Pane, PaneId};
 use crate::native::selection::MouseSelection;
 use crate::native::ui::{ScreenWidget, SelectionRange};
@@ -15,6 +15,7 @@ pub(crate) fn draw(
     footer_msg: &str,
     selection: Option<MouseSelection>,
     split: SplitLayout,
+    maximized: Option<PaneId>,
 ) {
     let area = frame.area();
     if area.width < 4 || area.height < 4 {
@@ -24,7 +25,7 @@ pub(crate) fn draw(
 
     let header_area = Rect::new(area.x, area.y, area.width, 1);
     let footer_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
-    let (layouts, divider_area) = pane_layouts(area, split);
+    let (layouts, divider_area) = pane_layouts_for_view(area, split, maximized);
 
     frame.render_widget(
         Paragraph::new(format!(
@@ -35,25 +36,31 @@ pub(crate) fn draw(
         header_area,
     );
 
-    render_pane(
-        frame,
-        &panes[0],
-        layouts[0].outer,
-        focus.0 == PaneId::A,
-        selection
-            .filter(|selection| selection.pane == PaneId::A)
-            .map(MouseSelection::range),
-    );
-    render_divider(frame, divider_area, split);
-    render_pane(
-        frame,
-        &panes[1],
-        layouts[1].outer,
-        focus.0 == PaneId::B,
-        selection
-            .filter(|selection| selection.pane == PaneId::B)
-            .map(MouseSelection::range),
-    );
+    if layouts[0].outer.width > 0 && layouts[0].outer.height > 0 {
+        render_pane(
+            frame,
+            &panes[0],
+            layouts[0].outer,
+            focus.0 == PaneId::A,
+            selection
+                .filter(|selection| selection.pane == PaneId::A)
+                .map(MouseSelection::range),
+        );
+    }
+    if divider_area.width > 0 && divider_area.height > 0 {
+        render_divider(frame, divider_area, split);
+    }
+    if layouts[1].outer.width > 0 && layouts[1].outer.height > 0 {
+        render_pane(
+            frame,
+            &panes[1],
+            layouts[1].outer,
+            focus.0 == PaneId::B,
+            selection
+                .filter(|selection| selection.pane == PaneId::B)
+                .map(MouseSelection::range),
+        );
+    }
 
     frame.render_widget(
         Paragraph::new(footer_msg).style(Style::default().fg(Color::DarkGray)),

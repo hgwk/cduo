@@ -27,6 +27,28 @@ pub(crate) fn resize_panes(panes: &mut [Pane; 2], cols: u16, rows: u16, split: S
     }
 }
 
+pub(crate) fn resize_panes_for_view(
+    panes: &mut [Pane; 2],
+    cols: u16,
+    rows: u16,
+    split: SplitLayout,
+    maximized: Option<PaneId>,
+) {
+    if let Some(active) = maximized {
+        let body_cols = cols.saturating_sub(2).max(1);
+        let body_rows = rows.saturating_sub(4).max(1);
+        for pane in panes.iter_mut() {
+            if pane.id == active {
+                pane.resize(body_cols, body_rows);
+            } else {
+                pane.resize(1, 1);
+            }
+        }
+    } else {
+        resize_panes(panes, cols, rows, split);
+    }
+}
+
 pub(crate) fn toggle_split(split: SplitLayout) -> SplitLayout {
     match split {
         SplitLayout::Columns => SplitLayout::Rows,
@@ -79,6 +101,34 @@ pub(crate) fn pane_layouts(area: Rect, split: SplitLayout) -> ([PaneLayout; 2], 
                 divider,
             )
         }
+    }
+}
+
+pub(crate) fn pane_layouts_for_view(
+    area: Rect,
+    split: SplitLayout,
+    maximized: Option<PaneId>,
+) -> ([PaneLayout; 2], Rect) {
+    let Some(active) = maximized else {
+        return pane_layouts(area, split);
+    };
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(2),
+    );
+    let hidden = Rect::new(body.x, body.y, 0, 0);
+    let divider = Rect::new(body.x, body.y, 0, 0);
+    match active {
+        PaneId::A => (
+            [PaneLayout { outer: body }, PaneLayout { outer: hidden }],
+            divider,
+        ),
+        PaneId::B => (
+            [PaneLayout { outer: hidden }, PaneLayout { outer: body }],
+            divider,
+        ),
     }
 }
 

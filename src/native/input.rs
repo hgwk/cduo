@@ -90,6 +90,18 @@ pub enum GlobalAction {
     TogglePause,
     /// Toggle the pane split layout between columns and rows.
     ToggleSplit,
+    /// Manually relay the latest answer from the focused pane.
+    ManualRelay,
+    /// Clear queued relay writes while relay delivery is paused.
+    ClearRelayQueue,
+    /// Toggle automatic relay from pane A to pane B.
+    ToggleRelayAToB,
+    /// Toggle automatic relay from pane B to pane A.
+    ToggleRelayBToA,
+    /// Show recent relay activity in the footer.
+    ShowRelayLog,
+    /// Toggle focused pane maximize layout preset.
+    ToggleFocusLayout,
     /// Scroll the focused pane upward through scrollback.
     ScrollUp,
     /// Scroll the focused pane downward toward the live screen.
@@ -98,7 +110,10 @@ pub enum GlobalAction {
 
 /// Classify a key press at the runtime level. Ctrl-Q quits, Ctrl-W cycles
 /// focus forward, Ctrl-W with Shift cycles backward, Ctrl-P toggles relay
-/// pause, Ctrl-L toggles split layout. Everything else is forwarded.
+/// pause, Ctrl-L toggles split layout, Ctrl-R triggers manual relay, Ctrl-X
+/// clears queued relay writes, Ctrl-1/Ctrl-2 toggle relay directions, Ctrl-G
+/// shows recent relay activity, and Ctrl-Z toggles focused-pane maximize.
+/// Everything else is forwarded.
 pub fn classify_key(key: KeyEvent) -> GlobalAction {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -113,6 +128,12 @@ pub fn classify_key(key: KeyEvent) -> GlobalAction {
         }
         KeyCode::Char('p') | KeyCode::Char('P') if ctrl => GlobalAction::TogglePause,
         KeyCode::Char('l') | KeyCode::Char('L') if ctrl => GlobalAction::ToggleSplit,
+        KeyCode::Char('r') | KeyCode::Char('R') if ctrl => GlobalAction::ManualRelay,
+        KeyCode::Char('x') | KeyCode::Char('X') if ctrl => GlobalAction::ClearRelayQueue,
+        KeyCode::Char('1') if ctrl => GlobalAction::ToggleRelayAToB,
+        KeyCode::Char('2') if ctrl => GlobalAction::ToggleRelayBToA,
+        KeyCode::Char('g') | KeyCode::Char('G') if ctrl => GlobalAction::ShowRelayLog,
+        KeyCode::Char('z') | KeyCode::Char('Z') if ctrl => GlobalAction::ToggleFocusLayout,
         KeyCode::PageUp => GlobalAction::ScrollUp,
         KeyCode::PageDown => GlobalAction::ScrollDown,
         _ => GlobalAction::Forward,
@@ -162,6 +183,34 @@ mod tests {
         assert_eq!(
             classify_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL)),
             GlobalAction::ToggleSplit
+        );
+    }
+
+    #[test]
+    fn relay_controls_classify() {
+        assert_eq!(
+            classify_key(key(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            GlobalAction::ManualRelay
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            GlobalAction::ClearRelayQueue
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::Char('1'), KeyModifiers::CONTROL)),
+            GlobalAction::ToggleRelayAToB
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::Char('2'), KeyModifiers::CONTROL)),
+            GlobalAction::ToggleRelayBToA
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::Char('g'), KeyModifiers::CONTROL)),
+            GlobalAction::ShowRelayLog
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            GlobalAction::ToggleFocusLayout
         );
     }
 

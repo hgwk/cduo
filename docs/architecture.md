@@ -30,6 +30,20 @@ Session logs are written under the platform state directory:
 - macOS: `~/Library/Application Support/works.higgs.cduo/native/`
 - Linux: `~/.local/state/works.higgs.cduo/native/`
 
+Runtime controls stay local to the foreground UI:
+
+- `Ctrl-R`: manually relay the current pane to its peer.
+- `Ctrl-X`: clear queued relay writes while relay delivery is paused.
+- `Ctrl-1`: toggle A -> B relay delivery.
+- `Ctrl-2`: toggle B -> A relay delivery.
+- `Ctrl-G`: show recent relay log/status.
+- `Ctrl-Z`: cycle layout preset/maximize mode.
+- `Ctrl-L`: toggle rows/columns.
+- `Ctrl-P`: pause or resume automatic relay delivery.
+
+`CDUO_RELAY_PREFIX` prepends a short instruction to relayed messages before
+they are published or manually sent.
+
 ## Relay Sources
 
 - Claude: `Stop` hook posts `terminal_id` and `transcript_path` to the local hook server.
@@ -54,7 +68,7 @@ commands do not edit project files.
 - `src/cli.rs`: clap definitions for `start` / `claude` / `codex` / `status` / etc.
 - `src/native/runtime.rs`: ratatui UI loop, PTY ownership, raw-mode/alt-screen guard, hook server bootstrap, channel wiring.
 - `src/native/pane.rs`: per-pane PTY spawn + reader thread + vt100 parser.
-- `src/native/input.rs`: crossterm `KeyEvent` → PTY bytes; global Ctrl-Q / Ctrl-W / Ctrl-P / Ctrl-L classification.
+- `src/native/input.rs`: crossterm `KeyEvent` → PTY bytes; global runtime-control classification.
 - `src/native/ui.rs`: vt100 `Screen` → ratatui `Buffer` rendering with color/attribute mapping.
 - `src/native/relay.rs`: `tokio::select!` loop over hook / input / 250 ms tick; pane↔transcript binding; bracketed-paste delivery.
 - `src/relay_core.rs`: pure helpers shared by the relay loop — transcript parsing, codex rollout discovery, dedup, structured logging.

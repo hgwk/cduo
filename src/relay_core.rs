@@ -8,9 +8,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::message::Message;
-use crate::message_bus::MessageBus;
-use crate::pair_router::PairRouter;
 use crate::transcripts::{self, TranscriptOutput};
 
 pub const DEFAULT_SUBMIT_DELAY_MS: u64 = 300;
@@ -321,44 +318,6 @@ pub fn drop_seen_signature(
     } else {
         last_signatures.insert(pane_id.to_string(), signature.clone());
         output
-    }
-}
-
-pub fn publish_transcript_output(
-    bus: &mut MessageBus,
-    router: &PairRouter,
-    log_path: &Path,
-    pane_id: &str,
-    output: &TranscriptOutput,
-) {
-    if output.output.is_empty() || output.output.len() <= 6 {
-        return;
-    }
-
-    let agent_msg = Message::new_agent(pane_id, &output.output);
-    let Some(relay_msg) = router.route(&agent_msg) else {
-        return;
-    };
-
-    let target = relay_msg.target_node_id.clone();
-    if bus.publish(relay_msg) {
-        log_event(
-            log_path,
-            format!(
-                "publish source={pane_id} target={target} len={} text=\"{}\"",
-                output.output.len(),
-                preview(&output.output)
-            ),
-        );
-    } else {
-        log_event(
-            log_path,
-            format!(
-                "dedup source={pane_id} target={target} len={} text=\"{}\"",
-                output.output.len(),
-                preview(&output.output)
-            ),
-        );
     }
 }
 

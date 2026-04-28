@@ -90,12 +90,20 @@ Native UI controls:
 
 - `Ctrl-W`: switch focus between panes
 - `Ctrl-Shift-W`: switch focus in the opposite direction
+- `Ctrl-R`: manually relay the current pane to its peer
+- `Ctrl-X`: clear queued relay writes while relay delivery is paused
+- `Ctrl-1`: toggle A -> B relay delivery
+- `Ctrl-2`: toggle B -> A relay delivery
+- `Ctrl-G`: show recent relay log/status
+- `Ctrl-Z`: cycle layout preset/maximize mode
 - `Ctrl-P`: pause or resume automatic relay delivery
 - `Ctrl-L`: toggle split layout between columns and rows
 - `Ctrl-Q`: quit the native UI and stop both agents
 - `PageUp` / `PageDown`: scroll the focused pane
 - Mouse wheel: scroll the pane under the cursor
 - Mouse drag: select text inside one pane; release to copy the selected text via OSC52
+
+Set `CDUO_RELAY_PREFIX` to prepend a short instruction to relayed messages.
 
 ## Commands
 

@@ -26,7 +26,8 @@ use crate::hook::{self, HookEvent};
 use crate::native::access::{agent_args, agent_program, AccessMode};
 use crate::native::input::{classify_key, key_to_bytes, GlobalAction};
 use crate::native::layout::{
-    focus_index, pane_id_index, pane_layouts, resize_panes, split_label, toggle_split,
+    focus_index, pane_id_index, pane_layouts_for_view, resize_panes_for_view, split_label,
+    toggle_split,
 };
 use crate::native::pane::{Focus, Pane, PaneId};
 use crate::native::relay;
@@ -65,6 +66,12 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let (input_tx, input_rx) = mpsc::channel::<(String, String)>(64);
     let (write_tx, write_rx) = mpsc::channel::<(String, Vec<u8>)>(64);
+    let (control_tx, control_rx) = mpsc::channel::<relay::RelayControl>(64);
+    if let Ok(prefix) = std::env::var("CDUO_RELAY_PREFIX") {
+        if !prefix.is_empty() {
+            let _ = control_tx.try_send(relay::RelayControl::SetPrefix(Some(prefix)));
+        }
+    }
 
     tokio::spawn({
         let shutdown_rx = shutdown_tx.subscribe();
@@ -89,13 +96,17 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
         log_path: log_path.clone(),
         pane_agents,
         hook_rx,
+        control_rx,
         input_rx,
         write_tx,
         shutdown_rx: shutdown_tx.subscribe(),
     }));
 
-    let join =
-        tokio::task::spawn_blocking(move || run_blocking(opts, cwd, hook_port, input_tx, write_rx));
+    let join = tokio::task::spawn_blocking(move || {
+        run_blocking(
+            opts, cwd, hook_port, log_path, input_tx, control_tx, write_rx,
+        )
+    });
     let result = join.await.context("native runtime join")?;
 
     let _ = shutdown_tx.send(());
@@ -133,14 +144,18 @@ fn run_blocking(
     opts: RuntimeOptions,
     cwd: PathBuf,
     hook_port: u16,
+    log_path: PathBuf,
     input_tx: mpsc::Sender<(String, String)>,
+    control_tx: mpsc::Sender<relay::RelayControl>,
     write_rx: mpsc::Receiver<(String, Vec<u8>)>,
 ) -> Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
 
-    let result = ui_loop(opts, &cwd, hook_port, input_tx, write_rx);
+    let result = ui_loop(
+        opts, &cwd, hook_port, &log_path, input_tx, control_tx, write_rx,
+    );
 
     let mut stdout = io::stdout();
     let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
@@ -152,7 +167,9 @@ fn ui_loop(
     opts: RuntimeOptions,
     cwd: &std::path::Path,
     hook_port: u16,
+    log_path: &std::path::Path,
     input_tx: mpsc::Sender<(String, String)>,
+    control_tx: mpsc::Sender<relay::RelayControl>,
     mut write_rx: mpsc::Receiver<(String, Vec<u8>)>,
 ) -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
@@ -204,6 +221,9 @@ fn ui_loop(
     let mut selection: Option<MouseSelection> = None;
     let mut relay_paused = false;
     let mut paused_writes: VecDeque<(String, Vec<u8>)> = VecDeque::new();
+    let mut a_to_b_enabled = true;
+    let mut b_to_a_enabled = true;
+    let mut maximized: Option<PaneId> = None;
 
     // Per-pane buffer that mirrors what we forwarded to the agent. On every
     // \r/\n we flush it as a (pane_id, line) submission for the relay's codex
@@ -247,7 +267,15 @@ fn ui_loop(
 
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
             terminal.draw(|frame| {
-                draw(frame, &panes, focus, &footer_msg, selection, split);
+                draw(
+                    frame,
+                    &panes,
+                    focus,
+                    &footer_msg,
+                    selection,
+                    split,
+                    maximized,
+                );
             })?;
             last_frame = Instant::now();
             dirty = false;
@@ -281,9 +309,83 @@ fn ui_loop(
                         GlobalAction::ToggleSplit => {
                             split = toggle_split(split);
                             let size = terminal.size()?;
-                            resize_panes(&mut panes, size.width, size.height, split);
+                            resize_panes_for_view(
+                                &mut panes,
+                                size.width,
+                                size.height,
+                                split,
+                                maximized,
+                            );
                             footer_msg =
                                 format!(" split: {} · Ctrl-L: toggle split ", split_label(split));
+                            dirty = true;
+                        }
+                        GlobalAction::ManualRelay => {
+                            let pane_id = focus.0.label().to_string();
+                            let _ = control_tx.try_send(relay::RelayControl::ManualRelay {
+                                pane_id: pane_id.clone(),
+                            });
+                            footer_msg = format!(
+                                " manual relay requested from pane {} ",
+                                pane_id.to_uppercase()
+                            );
+                            dirty = true;
+                        }
+                        GlobalAction::ClearRelayQueue => {
+                            let cleared = paused_writes.len();
+                            paused_writes.clear();
+                            footer_msg =
+                                format!(" relay queue cleared · dropped writes: {cleared} ");
+                            dirty = true;
+                        }
+                        GlobalAction::ToggleRelayAToB => {
+                            a_to_b_enabled = !a_to_b_enabled;
+                            let _ = control_tx.try_send(relay::RelayControl::SetRoute {
+                                source: "a".to_string(),
+                                target: "b".to_string(),
+                                enabled: a_to_b_enabled,
+                            });
+                            footer_msg = route_footer("A→B", a_to_b_enabled);
+                            dirty = true;
+                        }
+                        GlobalAction::ToggleRelayBToA => {
+                            b_to_a_enabled = !b_to_a_enabled;
+                            let _ = control_tx.try_send(relay::RelayControl::SetRoute {
+                                source: "b".to_string(),
+                                target: "a".to_string(),
+                                enabled: b_to_a_enabled,
+                            });
+                            footer_msg = route_footer("B→A", b_to_a_enabled);
+                            dirty = true;
+                        }
+                        GlobalAction::ShowRelayLog => {
+                            footer_msg = recent_log_footer(log_path);
+                            dirty = true;
+                        }
+                        GlobalAction::ToggleFocusLayout => {
+                            maximized = match maximized {
+                                Some(active) if active == focus.0 => None,
+                                _ => Some(focus.0),
+                            };
+                            let size = terminal.size()?;
+                            resize_panes_for_view(
+                                &mut panes,
+                                size.width,
+                                size.height,
+                                split,
+                                maximized,
+                            );
+                            footer_msg = match maximized {
+                                Some(active) => {
+                                    format!(
+                                        " pane {} maximized · Ctrl-Z: restore ",
+                                        active.label().to_uppercase()
+                                    )
+                                }
+                                None => {
+                                    " layout restored · Ctrl-Z: maximize focused pane ".to_string()
+                                }
+                            };
                             dirty = true;
                         }
                         GlobalAction::ScrollUp => {
@@ -304,13 +406,13 @@ fn ui_loop(
                     }
                 }
                 Event::Resize(cols, rows) => {
-                    resize_panes(&mut panes, cols, rows, split);
+                    resize_panes_for_view(&mut panes, cols, rows, split, maximized);
                     dirty = true;
                 }
                 Event::Mouse(mouse) => {
                     let size = terminal.size()?;
                     let area = Rect::new(0, 0, size.width, size.height);
-                    let (layouts, _) = pane_layouts(area, split);
+                    let (layouts, _) = pane_layouts_for_view(area, split, maximized);
                     match mouse.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
                             if let Some((pane, row, col)) =
@@ -406,6 +508,31 @@ fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) {
 
 fn pause_footer(queued_writes: usize) -> String {
     format!(" relay paused · queued writes: {queued_writes} · Ctrl-P: resume ")
+}
+
+fn route_footer(route: &str, enabled: bool) -> String {
+    let state = if enabled { "on" } else { "off" };
+    format!(" relay {route}: {state} · Ctrl-1: A→B · Ctrl-2: B→A ")
+}
+
+fn recent_log_footer(log_path: &std::path::Path) -> String {
+    let Ok(contents) = std::fs::read_to_string(log_path) else {
+        return " relay log unavailable ".to_string();
+    };
+    let line = contents
+        .lines()
+        .rev()
+        .find(|line| {
+            line.contains("publish")
+                || line.contains("dedup")
+                || line.contains("deliver")
+                || line.contains("route")
+                || line.contains("manual")
+        })
+        .unwrap_or("relay log empty");
+    let mut msg = format!(" relay log · {line} ");
+    msg.truncate(220);
+    msg
 }
 
 /// Mirror forwarded keystrokes for the focused pane and emit the buffered text
