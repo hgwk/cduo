@@ -156,4 +156,16 @@ mod tests {
         assert_eq!(split_label(SplitLayout::Columns), "columns");
         assert_eq!(split_label(SplitLayout::Rows), "rows");
     }
+
+    #[test]
+    fn maximized_layout_hides_inactive_pane() {
+        let area = Rect::new(0, 0, 100, 40);
+        let (layouts, divider) = pane_layouts_for_view(area, SplitLayout::Columns, Some(PaneId::B));
+
+        assert_eq!(layouts[0].outer.width, 0);
+        assert_eq!(layouts[0].outer.height, 0);
+        assert_eq!(layouts[1].outer, Rect::new(0, 1, 100, 38));
+        assert_eq!(divider.width, 0);
+        assert_eq!(divider.height, 0);
+    }
 }

@@ -291,10 +291,32 @@ fn ui_loop(
                         GlobalAction::Quit => break 'main,
                         GlobalAction::FocusNext => {
                             focus = focus.next();
+                            if maximized.is_some() {
+                                maximized = Some(focus.0);
+                                let size = terminal.size()?;
+                                resize_panes_for_view(
+                                    &mut panes,
+                                    size.width,
+                                    size.height,
+                                    split,
+                                    maximized,
+                                );
+                            }
                             dirty = true;
                         }
                         GlobalAction::FocusPrev => {
                             focus = focus.prev();
+                            if maximized.is_some() {
+                                maximized = Some(focus.0);
+                                let size = terminal.size()?;
+                                resize_panes_for_view(
+                                    &mut panes,
+                                    size.width,
+                                    size.height,
+                                    split,
+                                    maximized,
+                                );
+                            }
                             dirty = true;
                         }
                         GlobalAction::TogglePause => {

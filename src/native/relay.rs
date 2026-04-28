@@ -110,6 +110,7 @@ pub async fn run(inputs: RelayInputs) {
                                 pane_agents: &pane_agents,
                                 codex_transcripts: &codex_transcripts,
                                 claude_transcripts: &claude_transcripts,
+                                pending_prompts: &mut codex_pending_prompts,
                                 write_tx: &write_tx,
                                 log_path: &log_path,
                             },
@@ -300,6 +301,7 @@ struct ManualRelayContext<'a> {
     pane_agents: &'a HashMap<String, String>,
     codex_transcripts: &'a HashMap<String, PathBuf>,
     claude_transcripts: &'a HashMap<String, PathBuf>,
+    pending_prompts: &'a mut HashMap<String, String>,
     write_tx: &'a mpsc::Sender<(String, Vec<u8>)>,
     log_path: &'a std::path::Path,
 }
@@ -344,6 +346,8 @@ async fn manual_relay(pane_id: &str, ctx: ManualRelayContext<'_>) {
     }
 
     let content = ctx.controls.delivered_content(&output.output);
+    ctx.pending_prompts
+        .insert(target.to_string(), normalize_prompt_text(&content));
     let target_agent = ctx
         .pane_agents
         .get(target)
@@ -791,6 +795,49 @@ mod tests {
             rx_a.try_recv().is_err(),
             "manual relay should deduplicate the already delivered transcript output"
         );
+    }
+
+    #[tokio::test]
+    async fn manual_relay_primes_codex_target_prompt_binding() {
+        let temp = tempdir().unwrap();
+        let log_path = temp.path().join("relay.log");
+        let transcript_path = temp.path().join("claude.jsonl");
+        let answer = "MANUAL_CLAUDE_TO_CODEX_PROMPT";
+        write_claude_transcript(&transcript_path, answer);
+
+        let router = PairRouter::new("a", "b");
+        let controls = RelayControlState::default();
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "claude".to_string()),
+            ("b".to_string(), "codex".to_string()),
+        ]);
+        let codex_transcripts = HashMap::new();
+        let claude_transcripts = HashMap::from([("a".to_string(), transcript_path.to_path_buf())]);
+        let mut pending_prompts = HashMap::new();
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(8);
+
+        manual_relay(
+            "a",
+            ManualRelayContext {
+                router: &router,
+                controls: &controls,
+                pane_agents: &pane_agents,
+                codex_transcripts: &codex_transcripts,
+                claude_transcripts: &claude_transcripts,
+                pending_prompts: &mut pending_prompts,
+                write_tx: &write_tx,
+                log_path: &log_path,
+            },
+        )
+        .await;
+
+        assert_eq!(
+            pending_prompts.get("b").map(String::as_str),
+            Some(answer),
+            "manual relay should prime Codex transcript binding for the target pane"
+        );
+        let writes = collect_writes(&mut write_rx, Duration::from_secs(1)).await;
+        assert_relay_writes(&writes, "b", answer);
     }
 
     #[test]
