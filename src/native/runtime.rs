@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use base64::Engine;
 use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, MouseButton, MouseEventKind};
 use crossterm::execute;
@@ -18,47 +17,29 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 
 use tokio::sync::{broadcast, mpsc};
 
 use crate::cli::{Agent, SplitLayout};
 use crate::hook::{self, HookEvent};
+use crate::native::access::{agent_args, agent_program, AccessMode};
 use crate::native::input::{classify_key, key_to_bytes, GlobalAction};
+use crate::native::layout::{
+    focus_index, pane_id_index, pane_layouts, resize_panes, split_label, toggle_split,
+};
 use crate::native::pane::{Focus, Pane, PaneId};
 use crate::native::relay;
-use crate::native::ui::{pane_pty_size, ScreenWidget, SelectionRange};
+use crate::native::render::draw;
+use crate::native::selection::{
+    copy_to_clipboard_osc52, mouse_cell, mouse_cell_in_pane, mouse_pane, selected_text,
+    MouseSelection,
+};
+use crate::native::ui::pane_pty_size;
 
 const FRAME_BUDGET_MS: u64 = 16;
 const POLL_INTERVAL_MS: u64 = 8;
 const SCROLL_LINES: usize = 5;
-
-#[derive(Debug, Clone, Copy)]
-struct PaneLayout {
-    outer: Rect,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct MouseSelection {
-    pane: PaneId,
-    start_row: u16,
-    start_col: u16,
-    end_row: u16,
-    end_col: u16,
-}
-
-impl MouseSelection {
-    fn range(self) -> SelectionRange {
-        SelectionRange {
-            start_row: self.start_row,
-            start_col: self.start_col,
-            end_row: self.end_row,
-            end_col: self.end_col,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeOptions {
@@ -71,40 +52,6 @@ pub struct RuntimeOptions {
     /// mode currently spawns a fresh session every time so this is a no-op.
     #[allow(dead_code)]
     pub new_session: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum AccessMode {
-    Default,
-    Yolo,
-    FullAccess,
-}
-
-impl AccessMode {
-    fn from_flags(yolo: bool, full_access: bool) -> Result<Self> {
-        match (yolo, full_access) {
-            (true, true) => anyhow::bail!("Use either --yolo or --full-access, not both."),
-            (true, false) => Ok(Self::Yolo),
-            (false, true) => Ok(Self::FullAccess),
-            (false, false) => Ok(Self::Default),
-        }
-    }
-}
-
-fn agent_args(agent: Agent, mode: AccessMode) -> &'static [&'static str] {
-    match (agent, mode) {
-        (Agent::Codex, AccessMode::Yolo) => &["--dangerously-bypass-approvals-and-sandbox"],
-        (Agent::Codex, AccessMode::FullAccess) => &[
-            "--sandbox",
-            "danger-full-access",
-            "--ask-for-approval",
-            "never",
-        ],
-        (Agent::Codex, AccessMode::Default) => &[],
-        (Agent::Claude, AccessMode::Yolo) => &["--dangerously-skip-permissions"],
-        (Agent::Claude, AccessMode::FullAccess) => &["--permission-mode", "bypassPermissions"],
-        (Agent::Claude, AccessMode::Default) => &[],
-    }
 }
 
 pub async fn run(opts: RuntimeOptions) -> Result<()> {
@@ -335,10 +282,8 @@ fn ui_loop(
                             split = toggle_split(split);
                             let size = terminal.size()?;
                             resize_panes(&mut panes, size.width, size.height, split);
-                            footer_msg = format!(
-                                " split: {} · Ctrl-L: toggle split ",
-                                split_label(split)
-                            );
+                            footer_msg =
+                                format!(" split: {} · Ctrl-L: toggle split ", split_label(split));
                             dirty = true;
                         }
                         GlobalAction::ScrollUp => {
@@ -450,31 +395,6 @@ fn ui_loop(
     Ok(())
 }
 
-fn focus_index(focus: Focus) -> usize {
-    pane_id_index(focus.0)
-}
-
-fn resize_panes(panes: &mut [Pane; 2], cols: u16, rows: u16, split: SplitLayout) {
-    let (pane_cols, pane_rows) = pane_pty_size(cols, rows, split);
-    for pane in panes.iter_mut() {
-        pane.resize(pane_cols, pane_rows);
-    }
-}
-
-fn toggle_split(split: SplitLayout) -> SplitLayout {
-    match split {
-        SplitLayout::Columns => SplitLayout::Rows,
-        SplitLayout::Rows => SplitLayout::Columns,
-    }
-}
-
-fn split_label(split: SplitLayout) -> &'static str {
-    match split {
-        SplitLayout::Columns => "columns",
-        SplitLayout::Rows => "rows",
-    }
-}
-
 fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) {
     let idx = match target {
         "a" => 0,
@@ -486,264 +406,6 @@ fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) {
 
 fn pause_footer(queued_writes: usize) -> String {
     format!(" relay paused · queued writes: {queued_writes} · Ctrl-P: resume ")
-}
-
-fn pane_id_index(id: PaneId) -> usize {
-    match id {
-        PaneId::A => 0,
-        PaneId::B => 1,
-    }
-}
-
-fn pane_layouts(area: Rect, split: SplitLayout) -> ([PaneLayout; 2], Rect) {
-    let body = Rect::new(
-        area.x,
-        area.y + 1,
-        area.width,
-        area.height.saturating_sub(2),
-    );
-    match split {
-        SplitLayout::Columns => {
-            let half = body.width / 2;
-            let pane_a = Rect::new(body.x, body.y, half, body.height);
-            let divider = Rect::new(body.x + half, body.y, 1, body.height);
-            let pane_b = Rect::new(
-                body.x + half + 1,
-                body.y,
-                body.width.saturating_sub(half + 1),
-                body.height,
-            );
-            ([PaneLayout { outer: pane_a }, PaneLayout { outer: pane_b }], divider)
-        }
-        SplitLayout::Rows => {
-            let half = body.height / 2;
-            let pane_a = Rect::new(body.x, body.y, body.width, half);
-            let divider = Rect::new(body.x, body.y + half, body.width, 1);
-            let pane_b = Rect::new(
-                body.x,
-                body.y + half + 1,
-                body.width,
-                body.height.saturating_sub(half + 1),
-            );
-            ([PaneLayout { outer: pane_a }, PaneLayout { outer: pane_b }], divider)
-        }
-    }
-}
-
-fn pane_inner(area: Rect) -> Rect {
-    Block::default().borders(Borders::ALL).inner(area)
-}
-
-fn mouse_pane(col: u16, row: u16, layouts: [PaneLayout; 2]) -> Option<PaneId> {
-    if point_in_rect(col, row, layouts[0].outer) {
-        Some(PaneId::A)
-    } else if point_in_rect(col, row, layouts[1].outer) {
-        Some(PaneId::B)
-    } else {
-        None
-    }
-}
-
-fn mouse_cell(col: u16, row: u16, layouts: [PaneLayout; 2]) -> Option<(PaneId, u16, u16)> {
-    mouse_cell_in_pane(col, row, layouts, PaneId::A)
-        .or_else(|| mouse_cell_in_pane(col, row, layouts, PaneId::B))
-}
-
-fn mouse_cell_in_pane(
-    col: u16,
-    row: u16,
-    layouts: [PaneLayout; 2],
-    pane: PaneId,
-) -> Option<(PaneId, u16, u16)> {
-    let layout = layouts[pane_id_index(pane)];
-    let inner = pane_inner(layout.outer);
-    if !point_in_rect(col, row, inner) {
-        let clamped_col = col.clamp(
-            inner.x,
-            inner.x.saturating_add(inner.width.saturating_sub(1)),
-        );
-        let clamped_row = row.clamp(
-            inner.y,
-            inner.y.saturating_add(inner.height.saturating_sub(1)),
-        );
-        if !point_in_rect(clamped_col, clamped_row, inner) {
-            return None;
-        }
-        return Some((pane, clamped_row - inner.y, clamped_col - inner.x));
-    }
-    Some((pane, row - inner.y, col - inner.x))
-}
-
-fn point_in_rect(col: u16, row: u16, rect: Rect) -> bool {
-    col >= rect.x
-        && col < rect.x.saturating_add(rect.width)
-        && row >= rect.y
-        && row < rect.y.saturating_add(rect.height)
-}
-
-fn selected_text(screen: &vt100::Screen, selection: SelectionRange) -> String {
-    let range = selection.normalized();
-    let mut lines = Vec::new();
-    for row in range.start_row..=range.end_row {
-        let start_col = if row == range.start_row {
-            range.start_col
-        } else {
-            0
-        };
-        let end_col = if row == range.end_row {
-            range.end_col
-        } else {
-            screen.size().1.saturating_sub(1)
-        };
-        let mut line = String::new();
-        for col in start_col..=end_col {
-            let Some(cell) = screen.cell(row, col) else {
-                continue;
-            };
-            if cell.is_wide_continuation() {
-                continue;
-            }
-            let contents = cell.contents();
-            if contents.is_empty() {
-                line.push(' ');
-            } else {
-                line.push_str(&contents);
-            }
-        }
-        lines.push(line.trim_end().to_string());
-    }
-    lines.join("\n").trim().to_string()
-}
-
-fn copy_to_clipboard_osc52(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    text: &str,
-) -> Result<()> {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    let backend = terminal.backend_mut();
-    use std::io::Write;
-    write!(backend, "\x1b]52;c;{encoded}\x07").context("write OSC52 clipboard")?;
-    backend.flush().context("flush OSC52 clipboard")?;
-    Ok(())
-}
-
-fn draw(
-    frame: &mut ratatui::Frame,
-    panes: &[Pane; 2],
-    focus: Focus,
-    footer_msg: &str,
-    selection: Option<MouseSelection>,
-    split: SplitLayout,
-) {
-    let area = frame.area();
-    if area.width < 4 || area.height < 4 {
-        frame.render_widget(Paragraph::new("terminal too small"), area);
-        return;
-    }
-
-    let header_area = Rect::new(area.x, area.y, area.width, 1);
-    let footer_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
-    let (layouts, divider_area) = pane_layouts(area, split);
-
-    frame.render_widget(
-        Paragraph::new(format!(
-            " cduo · A:{} | B:{} ",
-            panes[0].agent, panes[1].agent
-        ))
-        .style(Style::default().add_modifier(Modifier::BOLD)),
-        header_area,
-    );
-
-    render_pane(
-        frame,
-        &panes[0],
-        layouts[0].outer,
-        focus.0 == PaneId::A,
-        selection
-            .filter(|selection| selection.pane == PaneId::A)
-            .map(MouseSelection::range),
-    );
-    render_divider(frame, divider_area, split);
-    render_pane(
-        frame,
-        &panes[1],
-        layouts[1].outer,
-        focus.0 == PaneId::B,
-        selection
-            .filter(|selection| selection.pane == PaneId::B)
-            .map(MouseSelection::range),
-    );
-
-    frame.render_widget(
-        Paragraph::new(footer_msg).style(Style::default().fg(Color::DarkGray)),
-        footer_area,
-    );
-}
-
-fn render_pane(
-    frame: &mut ratatui::Frame,
-    pane: &Pane,
-    area: Rect,
-    focused: bool,
-    selection: Option<SelectionRange>,
-) {
-    let scroll = pane.scrollback();
-    let title = if scroll > 0 {
-        format!(
-            " {} {} ↑{} ",
-            pane.id.label().to_uppercase(),
-            pane.agent,
-            scroll
-        )
-    } else {
-        format!(" {} {} ", pane.id.label().to_uppercase(), pane.agent)
-    };
-    let border_style = if focused {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(title);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let widget = ScreenWidget {
-        screen: pane.parser.screen(),
-        selection,
-    };
-    frame.render_widget(widget, inner);
-
-    if focused && !pane.parser.screen().hide_cursor() {
-        let (cur_row, cur_col) = pane.parser.screen().cursor_position();
-        let x = inner.x + cur_col;
-        let y = inner.y + cur_row;
-        if x < inner.x + inner.width && y < inner.y + inner.height {
-            frame.set_cursor_position(ratatui::layout::Position::new(x, y));
-        }
-    }
-}
-
-fn render_divider(frame: &mut ratatui::Frame, area: Rect, split: SplitLayout) {
-    let borders = match split {
-        SplitLayout::Columns => Borders::LEFT,
-        SplitLayout::Rows => Borders::TOP,
-    };
-    let block = Block::default()
-        .borders(borders)
-        .border_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(block, area);
-}
-
-fn agent_program(agent: Agent) -> &'static str {
-    match agent {
-        Agent::Claude => "claude",
-        Agent::Codex => "codex",
-    }
 }
 
 /// Mirror forwarded keystrokes for the focused pane and emit the buffered text
@@ -779,57 +441,6 @@ mod tests {
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-    }
-
-    #[test]
-    fn access_mode_rejects_conflicting_flags() {
-        assert!(AccessMode::from_flags(true, true).is_err());
-    }
-
-    #[test]
-    fn access_mode_default() {
-        assert!(matches!(
-            AccessMode::from_flags(false, false).unwrap(),
-            AccessMode::Default
-        ));
-    }
-
-    #[test]
-    fn agent_args_yolo_codex() {
-        let args = agent_args(Agent::Codex, AccessMode::Yolo);
-        assert_eq!(args, &["--dangerously-bypass-approvals-and-sandbox"]);
-    }
-
-    #[test]
-    fn agent_args_full_access_codex() {
-        let args = agent_args(Agent::Codex, AccessMode::FullAccess);
-        assert_eq!(
-            args,
-            &[
-                "--sandbox",
-                "danger-full-access",
-                "--ask-for-approval",
-                "never",
-            ]
-        );
-    }
-
-    #[test]
-    fn agent_args_yolo_claude() {
-        let args = agent_args(Agent::Claude, AccessMode::Yolo);
-        assert_eq!(args, &["--dangerously-skip-permissions"]);
-    }
-
-    #[test]
-    fn agent_args_full_access_claude() {
-        let args = agent_args(Agent::Claude, AccessMode::FullAccess);
-        assert_eq!(args, &["--permission-mode", "bypassPermissions"]);
-    }
-
-    #[test]
-    fn agent_args_default_is_empty() {
-        assert!(agent_args(Agent::Claude, AccessMode::Default).is_empty());
-        assert!(agent_args(Agent::Codex, AccessMode::Default).is_empty());
     }
 
     #[test]
@@ -885,13 +496,5 @@ mod tests {
                 ("a".to_string(), "alpha".to_string()),
             ]
         );
-    }
-
-    #[test]
-    fn toggle_split_switches_layouts() {
-        assert_eq!(toggle_split(SplitLayout::Columns), SplitLayout::Rows);
-        assert_eq!(toggle_split(SplitLayout::Rows), SplitLayout::Columns);
-        assert_eq!(split_label(SplitLayout::Columns), "columns");
-        assert_eq!(split_label(SplitLayout::Rows), "rows");
     }
 }
