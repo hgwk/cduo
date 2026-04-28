@@ -659,6 +659,14 @@ mod tests {
         }
     }
 
+    fn restore_claude_home(previous: Option<std::ffi::OsString>) {
+        if let Some(prev) = previous {
+            std::env::set_var("CLAUDE_HOME", prev);
+        } else {
+            std::env::remove_var("CLAUDE_HOME");
+        }
+    }
+
     fn write_claude_transcript(path: &std::path::Path, assistant_text: &str) {
         let assistant_json = serde_json::to_string(assistant_text).unwrap();
         let assistant_line = format!(
@@ -669,6 +677,25 @@ mod tests {
             user_line = r#"{"type":"user","message":{"role":"user","content":"hello"}}"#,
             stop_line = r#"{"type":"system","subtype":"stop_hook_summary"}"#,
         );
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn write_claude_project_transcript(
+        path: &std::path::Path,
+        cwd: &std::path::Path,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        assistant_text: &str,
+    ) {
+        let cwd_json = serde_json::to_string(&cwd.to_string_lossy()).unwrap();
+        let ts = timestamp.to_rfc3339();
+        let assistant_json = serde_json::to_string(assistant_text).unwrap();
+        let body = format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":{assistant_json}}}]}},\"cwd\":{cwd_json},\"timestamp\":\"{ts}\"}}\n\
+             {{\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"cwd\":{cwd_json},\"timestamp\":\"{ts}\"}}\n",
+        );
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         std::fs::write(path, body).unwrap();
     }
 
@@ -1002,6 +1029,66 @@ mod tests {
         let writes = collect_writes(&mut write_rx, Duration::from_secs(5)).await;
         let _ = shutdown_tx.send(());
         let _ = timeout(Duration::from_secs(2), handle).await;
+
+        assert_relay_writes(&writes, "b", answer);
+    }
+
+    #[tokio::test]
+    async fn communication_gate_claude_to_codex_without_hook_transcript_path() {
+        let _guard = codex_home_lock().lock().await;
+
+        let temp = tempdir().unwrap();
+        let claude_home = temp.path().join("claude");
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let prev_claude_home = std::env::var_os("CLAUDE_HOME");
+        std::env::set_var("CLAUDE_HOME", &claude_home);
+
+        let started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let transcript_ts = chrono::Utc::now() + chrono::Duration::seconds(1);
+        let transcript_path = claude_home
+            .join("projects")
+            .join("-tmp-project")
+            .join("claude-fallback.jsonl");
+        let answer = "COMM_GATE_CLAUDE_TO_CODEX_FALLBACK";
+        write_claude_project_transcript(&transcript_path, &cwd, transcript_ts, answer);
+
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "claude".to_string()),
+            ("b".to_string(), "codex".to_string()),
+        ]);
+
+        let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(8);
+        let (_control_tx, control_rx) = mpsc::channel::<RelayControl>(8);
+        let (_input_tx, input_rx) = mpsc::channel::<(String, String)>(8);
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(16);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+        let handle = tokio::spawn(run(RelayInputs {
+            cwd: cwd.clone(),
+            started_at,
+            log_path: temp.path().join("relay.log"),
+            pane_agents,
+            hook_rx,
+            control_rx,
+            input_rx,
+            write_tx,
+            shutdown_rx: shutdown_tx.subscribe(),
+        }));
+
+        hook_tx
+            .send(HookEvent {
+                terminal_id: "a".to_string(),
+                transcript_path: None,
+            })
+            .await
+            .unwrap();
+
+        let writes = collect_writes(&mut write_rx, Duration::from_secs(5)).await;
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        restore_claude_home(prev_claude_home);
 
         assert_relay_writes(&writes, "b", answer);
     }

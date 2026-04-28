@@ -305,8 +305,17 @@ pub fn discover_recent_claude_transcript(
     started_at: chrono::DateTime<chrono::Utc>,
     excluded: &HashSet<PathBuf>,
 ) -> Option<PathBuf> {
+    discover_recent_claude_transcript_in_root(&claude_projects_root(), cwd, started_at, excluded)
+}
+
+fn discover_recent_claude_transcript_in_root(
+    root: &Path,
+    cwd: &Path,
+    started_at: chrono::DateTime<chrono::Utc>,
+    excluded: &HashSet<PathBuf>,
+) -> Option<PathBuf> {
     let mut files = Vec::new();
-    collect_jsonl_files(&claude_projects_root(), &mut files);
+    collect_jsonl_files(root, &mut files);
 
     files
         .into_iter()
@@ -451,8 +460,8 @@ mod tests {
     #[test]
     fn discovers_recent_claude_transcript_for_cwd() {
         let temp = tempfile::tempdir().unwrap();
-        let claude_home = temp.path().join("claude");
-        let project_dir = claude_home.join("projects").join("-tmp-project");
+        let projects_root = temp.path().join("projects");
+        let project_dir = projects_root.join("-tmp-project");
         std::fs::create_dir_all(&project_dir).unwrap();
         let cwd = temp.path().join("project");
         std::fs::create_dir_all(&cwd).unwrap();
@@ -468,18 +477,12 @@ mod tests {
         )
         .unwrap();
 
-        let previous = std::env::var_os("CLAUDE_HOME");
-        std::env::set_var("CLAUDE_HOME", &claude_home);
-        let discovered = discover_recent_claude_transcript(
+        let discovered = discover_recent_claude_transcript_in_root(
+            &projects_root,
             &cwd,
             timestamp - chrono::Duration::seconds(1),
             &HashSet::new(),
         );
-        if let Some(previous) = previous {
-            std::env::set_var("CLAUDE_HOME", previous);
-        } else {
-            std::env::remove_var("CLAUDE_HOME");
-        }
 
         assert_eq!(discovered, Some(path));
     }
