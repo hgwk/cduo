@@ -332,6 +332,43 @@ mod tests {
         out
     }
 
+    fn assert_relay_writes(writes: &[(String, Vec<u8>)], expected_target: &str, expected: &str) {
+        assert!(
+            !writes.is_empty(),
+            "expected relay to forward something, got nothing"
+        );
+        for (target, _) in writes {
+            assert_eq!(
+                target, expected_target,
+                "relay should target pane {expected_target}, got target {target}"
+            );
+        }
+        let body = writes
+            .iter()
+            .find_map(|(_, bytes)| {
+                let s = String::from_utf8_lossy(bytes);
+                s.contains("\x1b[200~").then_some(bytes.clone())
+            })
+            .expect("expected at least one bracketed-paste bundle");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains(expected),
+            "paste body missing expected content: {body:?}"
+        );
+        assert!(
+            writes.iter().any(|(_, b)| b == b"\r"),
+            "expected trailing Enter byte"
+        );
+    }
+
+    fn restore_codex_home(previous: Option<std::ffi::OsString>) {
+        if let Some(prev) = previous {
+            std::env::set_var("CODEX_HOME", prev);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+    }
+
     fn write_claude_transcript(path: &std::path::Path, assistant_text: &str) {
         let assistant_json = serde_json::to_string(assistant_text).unwrap();
         let assistant_line = format!(
@@ -366,7 +403,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_publishes_claude_hook_payload_to_b() {
+    async fn communication_gate_claude_to_claude() {
         let temp = tempdir().unwrap();
         let log_path = temp.path().join("relay.log");
         let transcript_path = temp.path().join("claude.jsonl");
@@ -428,6 +465,108 @@ mod tests {
             writes.iter().any(|(_, b)| b == b"\r"),
             "expected trailing Enter byte"
         );
+    }
+
+    #[tokio::test]
+    async fn communication_gate_claude_to_codex() {
+        let temp = tempdir().unwrap();
+        let log_path = temp.path().join("relay.log");
+        let transcript_path = temp.path().join("claude-to-codex.jsonl");
+        let answer = "COMM_GATE_CLAUDE_TO_CODEX";
+        write_claude_transcript(&transcript_path, answer);
+
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "claude".to_string()),
+            ("b".to_string(), "codex".to_string()),
+        ]);
+
+        let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(8);
+        let (_input_tx, input_rx) = mpsc::channel::<(String, String)>(8);
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(16);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+        let handle = tokio::spawn(run(RelayInputs {
+            cwd: std::env::current_dir().unwrap(),
+            started_at: chrono::Utc::now(),
+            log_path,
+            pane_agents,
+            hook_rx,
+            input_rx,
+            write_tx,
+            shutdown_rx: shutdown_tx.subscribe(),
+        }));
+
+        hook_tx
+            .send(HookEvent {
+                terminal_id: "a".to_string(),
+                transcript_path: Some(transcript_path.to_string_lossy().into_owned()),
+            })
+            .await
+            .unwrap();
+
+        let writes = collect_writes(&mut write_rx, Duration::from_secs(5)).await;
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        assert_relay_writes(&writes, "b", answer);
+    }
+
+    #[tokio::test]
+    async fn communication_gate_codex_to_codex() {
+        let _guard = codex_home_lock().lock().await;
+
+        let temp = tempdir().unwrap();
+        let codex_home = temp.path().join("codex");
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let prev_codex_home = std::env::var_os("CODEX_HOME");
+        std::env::set_var("CODEX_HOME", &codex_home);
+
+        let started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let session_ts = chrono::Utc::now() + chrono::Duration::seconds(1);
+        let rollout = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("27")
+            .join("rollout-codex-to-codex.jsonl");
+        let prompt = "COMM_GATE_CODEX_CODEX_PROMPT";
+        let answer = "COMM_GATE_CODEX_TO_CODEX";
+        write_codex_rollout(&rollout, &cwd, session_ts, prompt, answer);
+
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "codex".to_string()),
+            ("b".to_string(), "codex".to_string()),
+        ]);
+
+        let (_hook_tx, hook_rx) = mpsc::channel::<HookEvent>(8);
+        let (input_tx, input_rx) = mpsc::channel::<(String, String)>(8);
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(16);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+        let handle = tokio::spawn(run(RelayInputs {
+            cwd: cwd.clone(),
+            started_at,
+            log_path: temp.path().join("relay.log"),
+            pane_agents,
+            hook_rx,
+            input_rx,
+            write_tx,
+            shutdown_rx: shutdown_tx.subscribe(),
+        }));
+
+        input_tx
+            .send(("a".to_string(), prompt.to_string()))
+            .await
+            .unwrap();
+
+        let writes = collect_writes(&mut write_rx, Duration::from_secs(8)).await;
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        restore_codex_home(prev_codex_home);
+
+        assert_relay_writes(&writes, "b", answer);
     }
 
     #[tokio::test]
@@ -519,7 +658,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_publishes_codex_polling_from_a_to_claude_b() {
+    async fn communication_gate_codex_to_claude() {
         let _guard = codex_home_lock().lock().await;
 
         let temp = tempdir().unwrap();
