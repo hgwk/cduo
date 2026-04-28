@@ -44,13 +44,14 @@ async fn main() {
             .await;
         }
         Commands::Claude {
+            peer_agent,
             yolo,
             full_access,
             new_session,
         } => {
             run_native_or_exit(
                 cli::Agent::Claude,
-                cli::Agent::Claude,
+                peer_agent.unwrap_or(cli::Agent::Claude),
                 yolo,
                 full_access,
                 new_session,
@@ -58,13 +59,14 @@ async fn main() {
             .await;
         }
         Commands::Codex {
+            peer_agent,
             yolo,
             full_access,
             new_session,
         } => {
             run_native_or_exit(
                 cli::Agent::Codex,
-                cli::Agent::Codex,
+                peer_agent.unwrap_or(cli::Agent::Codex),
                 yolo,
                 full_access,
                 new_session,

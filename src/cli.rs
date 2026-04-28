@@ -29,8 +29,11 @@ pub enum Commands {
         new_session: bool,
     },
 
-    #[command(about = "Start a Claude/Claude native pair")]
+    #[command(about = "Start a native pair with Claude in pane A")]
     Claude {
+        #[arg(value_enum)]
+        peer_agent: Option<Agent>,
+
         #[arg(long, default_value_t = false)]
         yolo: bool,
 
@@ -41,8 +44,11 @@ pub enum Commands {
         new_session: bool,
     },
 
-    #[command(about = "Start a Codex/Codex native pair")]
+    #[command(about = "Start a native pair with Codex in pane A")]
     Codex {
+        #[arg(value_enum)]
+        peer_agent: Option<Agent>,
+
         #[arg(long, default_value_t = false)]
         yolo: bool,
 
@@ -105,6 +111,27 @@ mod tests {
                 assert_eq!(peer_agent, Some(Agent::Codex));
             }
             _ => panic!("expected start command"),
+        }
+    }
+
+    #[test]
+    fn parses_agent_shorthand_with_peer_agent() {
+        let cli = Cli::parse_from(["cduo", "claude", "codex"]);
+
+        match cli.command.unwrap() {
+            Commands::Claude { peer_agent, .. } => {
+                assert_eq!(peer_agent, Some(Agent::Codex));
+            }
+            _ => panic!("expected claude command"),
+        }
+
+        let cli = Cli::parse_from(["cduo", "codex", "claude"]);
+
+        match cli.command.unwrap() {
+            Commands::Codex { peer_agent, .. } => {
+                assert_eq!(peer_agent, Some(Agent::Claude));
+            }
+            _ => panic!("expected codex command"),
         }
     }
 
