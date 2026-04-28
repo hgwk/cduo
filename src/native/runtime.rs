@@ -33,7 +33,7 @@ use crate::native::pane::{Focus, Pane, PaneId};
 use crate::native::relay;
 use crate::native::render::draw;
 use crate::native::selection::{
-    copy_to_clipboard_osc52, mouse_cell, mouse_cell_in_pane, mouse_pane, selected_text,
+    copy_to_clipboard_osc52, mouse_cell, mouse_cell_in_pane_clamped, mouse_pane, selected_text,
     MouseSelection,
 };
 use crate::native::ui::pane_pty_size;
@@ -454,7 +454,7 @@ fn ui_loop(
                         }
                         MouseEventKind::Drag(MouseButton::Left) => {
                             if let Some(active) = selection.as_mut() {
-                                if let Some((_, row, col)) = mouse_cell_in_pane(
+                                if let Some((_, row, col)) = mouse_cell_in_pane_clamped(
                                     mouse.column,
                                     mouse.row,
                                     layouts,

@@ -57,6 +57,20 @@ pub(crate) fn mouse_cell_in_pane(
     let layout = layouts[pane_id_index(pane)];
     let inner = pane_inner(layout.outer);
     if !point_in_rect(col, row, inner) {
+        return None;
+    }
+    Some((pane, row - inner.y, col - inner.x))
+}
+
+pub(crate) fn mouse_cell_in_pane_clamped(
+    col: u16,
+    row: u16,
+    layouts: [PaneLayout; 2],
+    pane: PaneId,
+) -> Option<(PaneId, u16, u16)> {
+    let layout = layouts[pane_id_index(pane)];
+    let inner = pane_inner(layout.outer);
+    if !point_in_rect(col, row, inner) {
         let clamped_col = col.clamp(
             inner.x,
             inner.x.saturating_add(inner.width.saturating_sub(1)),
@@ -117,4 +131,41 @@ pub(crate) fn copy_to_clipboard_osc52(
     write!(backend, "\x1b]52;c;{encoded}\x07").context("write OSC52 clipboard")?;
     backend.flush().context("flush OSC52 clipboard")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn mouse_cell_hits_second_pane_without_clamping_to_first() {
+        let layouts = [
+            PaneLayout {
+                outer: Rect::new(0, 1, 40, 20),
+            },
+            PaneLayout {
+                outer: Rect::new(41, 1, 39, 20),
+            },
+        ];
+
+        assert_eq!(mouse_cell(45, 3, layouts), Some((PaneId::B, 1, 3)));
+    }
+
+    #[test]
+    fn mouse_drag_clamps_within_active_pane() {
+        let layouts = [
+            PaneLayout {
+                outer: Rect::new(0, 1, 40, 20),
+            },
+            PaneLayout {
+                outer: Rect::new(41, 1, 39, 20),
+            },
+        ];
+
+        assert_eq!(
+            mouse_cell_in_pane_clamped(90, 30, layouts, PaneId::B),
+            Some((PaneId::B, 17, 36))
+        );
+    }
 }

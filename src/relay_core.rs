@@ -67,6 +67,16 @@ pub fn codex_sessions_root() -> PathBuf {
         .join("sessions")
 }
 
+pub fn claude_projects_root() -> PathBuf {
+    std::env::var("CLAUDE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".claude")
+        })
+        .join("projects")
+}
+
 pub fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -80,6 +90,23 @@ pub fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+pub fn claude_transcript_meta(path: &Path) -> Option<(PathBuf, chrono::DateTime<chrono::Utc>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|value| {
+            let cwd = value.get("cwd").and_then(serde_json::Value::as_str)?;
+            let timestamp = value
+                .get("timestamp")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())?
+                .with_timezone(&chrono::Utc);
+            Some((PathBuf::from(cwd), timestamp))
+        })
+        .max_by_key(|(_, timestamp)| *timestamp)
 }
 
 pub fn codex_session_meta(path: &Path) -> Option<(PathBuf, chrono::DateTime<chrono::Utc>)> {
@@ -273,6 +300,29 @@ pub fn discover_recent_codex_transcripts(
     candidates.into_iter().map(|(_, _, path)| path).collect()
 }
 
+pub fn discover_recent_claude_transcript(
+    cwd: &Path,
+    started_at: chrono::DateTime<chrono::Utc>,
+    excluded: &HashSet<PathBuf>,
+) -> Option<PathBuf> {
+    let mut files = Vec::new();
+    collect_jsonl_files(&claude_projects_root(), &mut files);
+
+    files
+        .into_iter()
+        .filter(|path| !excluded.contains(path))
+        .filter_map(|path| {
+            let (session_cwd, last_timestamp) = claude_transcript_meta(&path)?;
+            if session_cwd != cwd || last_timestamp < started_at {
+                return None;
+            }
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            Some((last_timestamp, modified, path))
+        })
+        .max_by_key(|(last_timestamp, modified, _)| (*last_timestamp, *modified))
+        .map(|(_, _, path)| path)
+}
+
 pub fn count_claude_stop_hook_summaries(path: &Path) -> usize {
     let Ok(content) = std::fs::read_to_string(path) else {
         return 0;
@@ -396,6 +446,42 @@ mod tests {
             file.path(),
             "hello from codex"
         ));
+    }
+
+    #[test]
+    fn discovers_recent_claude_transcript_for_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude_home = temp.path().join("claude");
+        let project_dir = claude_home.join("projects").join("-tmp-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let path = project_dir.join("session.jsonl");
+        let timestamp = chrono::Utc::now();
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":\"hello\"}},\"cwd\":\"{}\",\"timestamp\":\"{}\"}}\n",
+                cwd.display(),
+                timestamp.to_rfc3339()
+            ),
+        )
+        .unwrap();
+
+        let previous = std::env::var_os("CLAUDE_HOME");
+        std::env::set_var("CLAUDE_HOME", &claude_home);
+        let discovered = discover_recent_claude_transcript(
+            &cwd,
+            timestamp - chrono::Duration::seconds(1),
+            &HashSet::new(),
+        );
+        if let Some(previous) = previous {
+            std::env::set_var("CLAUDE_HOME", previous);
+        } else {
+            std::env::remove_var("CLAUDE_HOME");
+        }
+
+        assert_eq!(discovered, Some(path));
     }
 
     #[test]

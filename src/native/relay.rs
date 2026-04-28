@@ -19,10 +19,10 @@ use crate::message::Message;
 use crate::message_bus::MessageBus;
 use crate::pair_router::PairRouter;
 use crate::relay_core::{
-    count_claude_stop_hook_summaries, discover_recent_codex_transcript,
-    discover_recent_codex_transcripts, drop_seen_signature, log_event, normalize_prompt_text,
-    pane_uses_claude, pane_uses_codex, preview, read_claude_transcript_with_retry,
-    submit_delay_for_agent,
+    count_claude_stop_hook_summaries, discover_recent_claude_transcript,
+    discover_recent_codex_transcript, discover_recent_codex_transcripts, drop_seen_signature,
+    log_event, normalize_prompt_text, pane_uses_claude, pane_uses_codex, preview,
+    read_claude_transcript_with_retry, submit_delay_for_agent,
 };
 use crate::transcripts::{self, TranscriptOutput};
 
@@ -185,24 +185,49 @@ pub async fn run(inputs: RelayInputs) {
                 if !pane_uses_claude(&pane_agents, &pane_id) {
                     continue;
                 }
-                if let Some(path) = event.transcript_path.as_deref() {
-                    claude_transcripts.insert(pane_id.clone(), PathBuf::from(path));
+                let transcript_path = event
+                    .transcript_path
+                    .as_deref()
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        let used_by_other_pane = claude_transcripts
+                            .iter()
+                            .filter(|(source, _)| source.as_str() != pane_id)
+                            .map(|(_, path)| path.clone())
+                            .collect::<std::collections::HashSet<_>>();
+                        let discovered = discover_recent_claude_transcript(
+                            &cwd,
+                            started_at,
+                            &used_by_other_pane,
+                        );
+                        if let Some(path) = &discovered {
+                            log_event(
+                                &log_path,
+                                format!(
+                                    "claude_transcript_fallback source={pane_id} path={}",
+                                    path.display()
+                                ),
+                            );
+                        }
+                        discovered
+                    });
+                if let Some(path) = transcript_path.as_ref() {
+                    claude_transcripts.insert(pane_id.clone(), path.clone());
                 }
 
-                let output = if let Some(path) = event.transcript_path.as_deref() {
+                let output = if let Some(path) = transcript_path.as_deref() {
                     let previous = claude_last_signatures.get(&pane_id).cloned();
                     let previous_stop_count = claude_last_stop_counts
                         .get(&pane_id)
                         .copied()
                         .unwrap_or(0);
-                    let transcript = std::path::Path::new(path);
                     let output = read_claude_transcript_with_retry(
-                        transcript,
+                        path,
                         previous.as_ref(),
                         previous_stop_count,
                     )
                     .await;
-                    let new_stop_count = count_claude_stop_hook_summaries(transcript);
+                    let new_stop_count = count_claude_stop_hook_summaries(path);
                     if new_stop_count > previous_stop_count {
                         claude_last_stop_counts.insert(pane_id.clone(), new_stop_count);
                     }
@@ -215,7 +240,10 @@ pub async fn run(inputs: RelayInputs) {
                     &log_path,
                     format!(
                         "hook_event source={pane_id} transcript={} output_len={} text=\"{}\"",
-                        event.transcript_path.as_deref().unwrap_or(""),
+                        transcript_path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_default(),
                         output.output.len(),
                         preview(&output.output)
                     ),
