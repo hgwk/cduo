@@ -104,6 +104,8 @@ Native UI controls:
 - Mouse drag: select text inside one pane; release to copy the selected text via OSC52
 
 Set `CDUO_RELAY_PREFIX` to prepend a short instruction to relayed messages.
+Set `CDUO_MAX_RELAY_TURNS` to stop automatic relay after N publishes, or have
+an agent output `CDUO_STOP_RELAY` to stop the automatic ping-pong.
 
 ## Commands
 

@@ -117,6 +117,8 @@ native UI 조작:
 - 마우스 드래그: 한 pane 안에서만 텍스트 선택, 버튼을 놓으면 OSC52로 클립보드 복사
 
 `CDUO_RELAY_PREFIX`를 설정하면 relay 메시지 앞에 짧은 지시문을 자동으로 붙일 수 있습니다.
+`CDUO_MAX_RELAY_TURNS`를 설정하면 자동 relay를 N회 publish 후 멈춥니다.
+agent가 `CDUO_STOP_RELAY`를 출력해도 자동 핑퐁 relay가 멈춥니다.
 
 ## 명령어
 

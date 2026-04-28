@@ -354,8 +354,7 @@ fn ui_loop(
                             dirty = true;
                         }
                         GlobalAction::ClearRelayQueue => {
-                            let cleared = paused_writes.len();
-                            paused_writes.clear();
+                            let cleared = clear_paused_writes(&mut paused_writes);
                             footer_msg =
                                 format!(" relay queue cleared · dropped writes: {cleared} ");
                             dirty = true;
@@ -532,6 +531,12 @@ fn pause_footer(queued_writes: usize) -> String {
     format!(" relay paused · queued writes: {queued_writes} · Ctrl-P: resume ")
 }
 
+fn clear_paused_writes(paused_writes: &mut VecDeque<(String, Vec<u8>)>) -> usize {
+    let cleared = paused_writes.len();
+    paused_writes.clear();
+    cleared
+}
+
 fn route_footer(route: &str, enabled: bool) -> String {
     let state = if enabled { "on" } else { "off" };
     format!(" relay {route}: {state} · Ctrl-1: A→B · Ctrl-2: B→A ")
@@ -645,5 +650,16 @@ mod tests {
                 ("a".to_string(), "alpha".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn clear_paused_writes_drops_all_queued_relay_bytes() {
+        let mut queue = VecDeque::from([
+            ("a".to_string(), b"one".to_vec()),
+            ("b".to_string(), b"two".to_vec()),
+        ]);
+
+        assert_eq!(clear_paused_writes(&mut queue), 2);
+        assert!(queue.is_empty());
     }
 }

@@ -82,6 +82,8 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use axum::body::Body;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
     use tower::util::ServiceExt;
 
     fn make_app() -> (Router, mpsc::Receiver<HookEvent>) {
@@ -248,6 +250,95 @@ mod tests {
 
         let event = rx.recv().await.unwrap();
         assert_eq!(event.terminal_id, "a");
+    }
+
+    #[tokio::test]
+    async fn test_transcript_path_payload_variants() {
+        let (app, mut rx) = make_app();
+
+        for (body, expected) in [
+            (
+                r#"{"type":"stop","terminal_id":"a","transcript_path":"/tmp/claude.jsonl"}"#,
+                Some("/tmp/claude.jsonl"),
+            ),
+            (
+                r#"{"type":"stop","terminal_id":"a","transcript_path":""}"#,
+                None,
+            ),
+            (r#"{"type":"stop","terminal_id":"a"}"#, None),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/hook")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let event = rx.recv().await.unwrap();
+            assert_eq!(event.terminal_id, "a");
+            assert_eq!(event.transcript_path.as_deref(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn template_stop_hook_command_posts_to_http_server() {
+        let (relay_tx, mut rx) = mpsc::channel::<HookEvent>(8);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new()
+            .route("/hook", post(handle_hook))
+            .with_state(relay_tx);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let template: serde_json::Value =
+            serde_json::from_str(include_str!("../templates/claude-settings.json")).unwrap();
+        let command = template["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+
+        let command = command.to_string();
+        let status = tokio::task::spawn_blocking(move || {
+            let mut child = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .env("ORCHESTRATION_PORT", port.to_string())
+                .env("TERMINAL_ID", "b")
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            stdin
+                .write_all(br#"{"transcript_path":"/tmp/from-template.jsonl"}"#)
+                .unwrap();
+            drop(stdin);
+            child.wait().unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(status.success());
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        server.abort();
+
+        assert_eq!(event.terminal_id, "b");
+        assert_eq!(
+            event.transcript_path.as_deref(),
+            Some("/tmp/from-template.jsonl")
+        );
     }
 
     #[tokio::test]

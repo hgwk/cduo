@@ -43,6 +43,8 @@ Runtime controls stay local to the foreground UI:
 
 `CDUO_RELAY_PREFIX` prepends a short instruction to relayed messages before
 they are published or manually sent.
+`CDUO_MAX_RELAY_TURNS` stops automatic relay after N publishes, and
+`CDUO_STOP_RELAY` or `[CDUO_STOP]` in an agent answer stops automatic relay.
 
 ## Relay Sources
 

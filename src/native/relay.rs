@@ -75,7 +75,7 @@ pub async fn run(inputs: RelayInputs) {
     let mut claude_last_stop_counts: HashMap<String, usize> = HashMap::new();
     let mut claude_transcripts: HashMap<String, PathBuf> = HashMap::new();
     let mut codex_pending_prompts: HashMap<String, String> = HashMap::new();
-    let mut controls = RelayControlState::default();
+    let mut controls = RelayControlState::from_env();
 
     log_event(&log_path, "native_relay_start");
 
@@ -168,7 +168,7 @@ pub async fn run(inputs: RelayInputs) {
                         &log_path,
                         &pane_id,
                         &output,
-                        &controls,
+                        &mut controls,
                     );
                 }
                 deliver_via_channel(
@@ -255,7 +255,7 @@ pub async fn run(inputs: RelayInputs) {
                     &log_path,
                     &pane_id,
                     &output,
-                    &controls,
+                    &mut controls,
                 );
                 deliver_via_channel(
                     &log_path,
@@ -454,6 +454,9 @@ struct RelayControlState {
     a_to_b_enabled: bool,
     b_to_a_enabled: bool,
     delivery_prefix: Option<String>,
+    max_auto_relays: Option<usize>,
+    auto_relay_count: usize,
+    stopped: bool,
 }
 
 impl Default for RelayControlState {
@@ -462,11 +465,24 @@ impl Default for RelayControlState {
             a_to_b_enabled: true,
             b_to_a_enabled: true,
             delivery_prefix: None,
+            max_auto_relays: None,
+            auto_relay_count: 0,
+            stopped: false,
         }
     }
 }
 
 impl RelayControlState {
+    fn from_env() -> Self {
+        Self {
+            max_auto_relays: std::env::var("CDUO_MAX_RELAY_TURNS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0),
+            ..Self::default()
+        }
+    }
+
     fn set_route_enabled(&mut self, source: &str, target: &str, enabled: bool) -> bool {
         match (source, target) {
             ("a", "b") => {
@@ -500,6 +516,32 @@ impl RelayControlState {
             None => content.to_string(),
         }
     }
+
+    fn should_stop_for_marker(content: &str) -> bool {
+        content.contains("CDUO_STOP_RELAY") || content.contains("[CDUO_STOP]")
+    }
+
+    fn stop(&mut self) {
+        self.stopped = true;
+    }
+
+    fn can_publish_auto(&mut self) -> bool {
+        if self.stopped {
+            return false;
+        }
+        if self
+            .max_auto_relays
+            .is_some_and(|max| self.auto_relay_count >= max)
+        {
+            self.stopped = true;
+            return false;
+        }
+        true
+    }
+
+    fn record_auto_publish(&mut self) {
+        self.auto_relay_count += 1;
+    }
 }
 
 fn publish_transcript_output_with_controls(
@@ -508,9 +550,25 @@ fn publish_transcript_output_with_controls(
     log_path: &std::path::Path,
     pane_id: &str,
     output: &TranscriptOutput,
-    controls: &RelayControlState,
+    controls: &mut RelayControlState,
 ) -> bool {
     if output.output.is_empty() || output.output.len() <= 6 {
+        return false;
+    }
+    if RelayControlState::should_stop_for_marker(&output.output) {
+        controls.stop();
+        log_event(
+            log_path,
+            format!(
+                "relay_stop_marker source={pane_id} len={} text=\"{}\"",
+                output.output.len(),
+                preview(&output.output)
+            ),
+        );
+        return false;
+    }
+    if !controls.can_publish_auto() {
+        log_event(log_path, format!("relay_stopped source={pane_id}"));
         return false;
     }
 
@@ -538,6 +596,9 @@ fn publish_transcript_output_with_controls(
     let delivered_preview = preview(&content);
     let relay_msg = Message::new_relay(&source, &target, &content);
     let published = bus.publish(relay_msg);
+    if published {
+        controls.record_auto_publish();
+    }
     log_event(
         log_path,
         format!(
@@ -556,7 +617,7 @@ fn publish_bound_codex_transcript_with_controls(
     pane_id: &str,
     transcripts: &HashMap<String, PathBuf>,
     last_signatures: &mut HashMap<String, String>,
-    controls: &RelayControlState,
+    controls: &mut RelayControlState,
 ) -> bool {
     let Some(path) = transcripts.get(pane_id) else {
         return false;
@@ -580,10 +641,9 @@ mod tests {
     use tokio::sync::Mutex;
     use tokio::time::timeout;
 
-    /// `codex_sessions_root` reads `CODEX_HOME` env. Serialize tests that
-    /// mutate that env var so parallel test threads do not interleave. We use
-    /// a tokio Mutex so it can be held across `.await` points safely.
-    fn codex_home_lock() -> &'static Mutex<()> {
+    /// Transcript discovery reads process env. Serialize tests that mutate
+    /// `CODEX_HOME` or `CLAUDE_HOME` so parallel test threads do not interleave.
+    fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -739,7 +799,7 @@ mod tests {
             &temp.path().join("relay.log"),
             "a",
             &output,
-            &controls,
+            &mut controls,
         ));
         assert!(
             rx_b.try_recv().is_err(),
@@ -753,7 +813,7 @@ mod tests {
             &temp.path().join("relay.log"),
             "a",
             &output,
-            &controls,
+            &mut controls,
         ));
         let msg = rx_b.try_recv().expect("enabled A->B route should deliver");
         assert_eq!(msg.source_node_id, "a");
@@ -777,7 +837,7 @@ mod tests {
             &temp.path().join("relay.log"),
             "b",
             &output,
-            &controls,
+            &mut controls,
         ));
         assert!(
             rx_a.try_recv().is_err(),
@@ -791,7 +851,7 @@ mod tests {
             &temp.path().join("relay.log"),
             "b",
             &output,
-            &controls,
+            &mut controls,
         ));
         let msg = rx_a.try_recv().expect("enabled B->A route should deliver");
         assert_eq!(msg.source_node_id, "b");
@@ -819,7 +879,7 @@ mod tests {
         let mut rx_a = bus.subscribe("a");
         let transcripts = HashMap::from([("b".to_string(), rollout)]);
         let mut last_signatures = HashMap::new();
-        let controls = RelayControlState::default();
+        let mut controls = RelayControlState::default();
 
         assert!(publish_bound_codex_transcript_with_controls(
             &mut bus,
@@ -828,7 +888,7 @@ mod tests {
             "b",
             &transcripts,
             &mut last_signatures,
-            &controls,
+            &mut controls,
         ));
         let msg = rx_a
             .try_recv()
@@ -844,7 +904,7 @@ mod tests {
             "b",
             &transcripts,
             &mut last_signatures,
-            &controls,
+            &mut controls,
         ));
         assert!(
             rx_a.try_recv().is_err(),
@@ -911,13 +971,74 @@ mod tests {
             &temp.path().join("relay.log"),
             "a",
             &output,
-            &controls,
+            &mut controls,
         ));
         let msg = rx_b.try_recv().expect("prefixed delivery should publish");
         assert_eq!(msg.source_node_id, "a");
         assert_eq!(msg.target_node_id, "b");
         assert_eq!(msg.content, "[relay from peer] PREFIXED_DELIVERY_BODY");
         assert_eq!(output.output, "PREFIXED_DELIVERY_BODY");
+    }
+
+    #[test]
+    fn relay_stop_marker_blocks_publish_and_stops_future_auto_relay() {
+        let temp = tempdir().unwrap();
+        let router = PairRouter::new("a", "b");
+        let mut bus = MessageBus::new();
+        let mut rx_b = bus.subscribe("b");
+        let mut controls = RelayControlState::default();
+
+        assert!(!publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &transcript_output("done CDUO_STOP_RELAY"),
+            &mut controls,
+        ));
+        assert!(rx_b.try_recv().is_err());
+
+        assert!(!publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &transcript_output("NEXT_OUTPUT_SHOULD_NOT_RELAY"),
+            &mut controls,
+        ));
+        assert!(rx_b.try_recv().is_err());
+    }
+
+    #[test]
+    fn max_relay_turns_blocks_auto_ping_pong_after_limit() {
+        let temp = tempdir().unwrap();
+        let router = PairRouter::new("a", "b");
+        let mut bus = MessageBus::new();
+        let mut rx_b = bus.subscribe("b");
+        let mut controls = RelayControlState {
+            max_auto_relays: Some(1),
+            ..RelayControlState::default()
+        };
+
+        assert!(publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &transcript_output("FIRST_ALLOWED_RELAY"),
+            &mut controls,
+        ));
+        assert!(rx_b.try_recv().is_ok());
+
+        assert!(!publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &transcript_output("SECOND_BLOCKED_RELAY"),
+            &mut controls,
+        ));
+        assert!(rx_b.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -1035,7 +1156,7 @@ mod tests {
 
     #[tokio::test]
     async fn communication_gate_claude_to_codex_without_hook_transcript_path() {
-        let _guard = codex_home_lock().lock().await;
+        let _guard = env_lock().lock().await;
 
         let temp = tempdir().unwrap();
         let claude_home = temp.path().join("claude");
@@ -1094,8 +1215,236 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn communication_gate_claude_b_to_codex_a_without_hook_transcript_path() {
+        let _guard = env_lock().lock().await;
+
+        let temp = tempdir().unwrap();
+        let claude_home = temp.path().join("claude");
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let prev_claude_home = std::env::var_os("CLAUDE_HOME");
+        std::env::set_var("CLAUDE_HOME", &claude_home);
+
+        let started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let transcript_ts = chrono::Utc::now() + chrono::Duration::seconds(1);
+        let transcript_path = claude_home
+            .join("projects")
+            .join("-tmp-project")
+            .join("claude-b-fallback.jsonl");
+        let answer = "COMM_GATE_CLAUDE_B_TO_CODEX_A_FALLBACK";
+        write_claude_project_transcript(&transcript_path, &cwd, transcript_ts, answer);
+
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "codex".to_string()),
+            ("b".to_string(), "claude".to_string()),
+        ]);
+
+        let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(8);
+        let (_control_tx, control_rx) = mpsc::channel::<RelayControl>(8);
+        let (_input_tx, input_rx) = mpsc::channel::<(String, String)>(8);
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(16);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+        let handle = tokio::spawn(run(RelayInputs {
+            cwd: cwd.clone(),
+            started_at,
+            log_path: temp.path().join("relay.log"),
+            pane_agents,
+            hook_rx,
+            control_rx,
+            input_rx,
+            write_tx,
+            shutdown_rx: shutdown_tx.subscribe(),
+        }));
+
+        hook_tx
+            .send(HookEvent {
+                terminal_id: "b".to_string(),
+                transcript_path: None,
+            })
+            .await
+            .unwrap();
+
+        let writes = collect_writes(&mut write_rx, Duration::from_secs(5)).await;
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        restore_claude_home(prev_claude_home);
+
+        assert_relay_writes(&writes, "a", answer);
+    }
+
+    #[tokio::test]
+    async fn communication_gate_claude_b_to_claude_a_without_hook_transcript_path() {
+        let _guard = env_lock().lock().await;
+
+        let temp = tempdir().unwrap();
+        let claude_home = temp.path().join("claude");
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let prev_claude_home = std::env::var_os("CLAUDE_HOME");
+        std::env::set_var("CLAUDE_HOME", &claude_home);
+
+        let started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let transcript_ts = chrono::Utc::now() + chrono::Duration::seconds(1);
+        let transcript_path = claude_home
+            .join("projects")
+            .join("-tmp-project")
+            .join("claude-b-to-claude-a-fallback.jsonl");
+        let answer = "COMM_GATE_CLAUDE_B_TO_CLAUDE_A_FALLBACK";
+        write_claude_project_transcript(&transcript_path, &cwd, transcript_ts, answer);
+
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "claude".to_string()),
+            ("b".to_string(), "claude".to_string()),
+        ]);
+
+        let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(8);
+        let (_control_tx, control_rx) = mpsc::channel::<RelayControl>(8);
+        let (_input_tx, input_rx) = mpsc::channel::<(String, String)>(8);
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(16);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+        let handle = tokio::spawn(run(RelayInputs {
+            cwd: cwd.clone(),
+            started_at,
+            log_path: temp.path().join("relay.log"),
+            pane_agents,
+            hook_rx,
+            control_rx,
+            input_rx,
+            write_tx,
+            shutdown_rx: shutdown_tx.subscribe(),
+        }));
+
+        hook_tx
+            .send(HookEvent {
+                terminal_id: "b".to_string(),
+                transcript_path: None,
+            })
+            .await
+            .unwrap();
+
+        let writes = collect_writes(&mut write_rx, Duration::from_secs(5)).await;
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        restore_claude_home(prev_claude_home);
+
+        assert_relay_writes(&writes, "a", answer);
+    }
+
+    #[tokio::test]
+    async fn communication_gate_route_off_blocks_a_to_b_in_run_loop() {
+        let temp = tempdir().unwrap();
+        let log_path = temp.path().join("relay.log");
+        let transcript_path = temp.path().join("claude-route-off.jsonl");
+        write_claude_transcript(&transcript_path, "ROUTE_OFF_A_TO_B_SHOULD_NOT_SEND");
+
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "claude".to_string()),
+            ("b".to_string(), "codex".to_string()),
+        ]);
+
+        let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(8);
+        let (control_tx, control_rx) = mpsc::channel::<RelayControl>(8);
+        let (_input_tx, input_rx) = mpsc::channel::<(String, String)>(8);
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(16);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+        let handle = tokio::spawn(run(RelayInputs {
+            cwd: std::env::current_dir().unwrap(),
+            started_at: chrono::Utc::now(),
+            log_path,
+            pane_agents,
+            hook_rx,
+            control_rx,
+            input_rx,
+            write_tx,
+            shutdown_rx: shutdown_tx.subscribe(),
+        }));
+
+        control_tx
+            .send(RelayControl::SetRoute {
+                source: "a".to_string(),
+                target: "b".to_string(),
+                enabled: false,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        hook_tx
+            .send(HookEvent {
+                terminal_id: "a".to_string(),
+                transcript_path: Some(transcript_path.to_string_lossy().into_owned()),
+            })
+            .await
+            .unwrap();
+
+        let writes = collect_writes(&mut write_rx, Duration::from_millis(900)).await;
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        assert!(writes.is_empty(), "disabled A->B route should not write");
+    }
+
+    #[tokio::test]
+    async fn communication_gate_route_off_blocks_b_to_a_in_run_loop() {
+        let temp = tempdir().unwrap();
+        let log_path = temp.path().join("relay.log");
+        let transcript_path = temp.path().join("claude-route-off-b.jsonl");
+        write_claude_transcript(&transcript_path, "ROUTE_OFF_B_TO_A_SHOULD_NOT_SEND");
+
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "codex".to_string()),
+            ("b".to_string(), "claude".to_string()),
+        ]);
+
+        let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(8);
+        let (control_tx, control_rx) = mpsc::channel::<RelayControl>(8);
+        let (_input_tx, input_rx) = mpsc::channel::<(String, String)>(8);
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(16);
+        let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+        let handle = tokio::spawn(run(RelayInputs {
+            cwd: std::env::current_dir().unwrap(),
+            started_at: chrono::Utc::now(),
+            log_path,
+            pane_agents,
+            hook_rx,
+            control_rx,
+            input_rx,
+            write_tx,
+            shutdown_rx: shutdown_tx.subscribe(),
+        }));
+
+        control_tx
+            .send(RelayControl::SetRoute {
+                source: "b".to_string(),
+                target: "a".to_string(),
+                enabled: false,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        hook_tx
+            .send(HookEvent {
+                terminal_id: "b".to_string(),
+                transcript_path: Some(transcript_path.to_string_lossy().into_owned()),
+            })
+            .await
+            .unwrap();
+
+        let writes = collect_writes(&mut write_rx, Duration::from_millis(900)).await;
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+
+        assert!(writes.is_empty(), "disabled B->A route should not write");
+    }
+
+    #[tokio::test]
     async fn communication_gate_codex_to_codex() {
-        let _guard = codex_home_lock().lock().await;
+        let _guard = env_lock().lock().await;
 
         let temp = tempdir().unwrap();
         let codex_home = temp.path().join("codex");
@@ -1155,7 +1504,7 @@ mod tests {
 
     #[tokio::test]
     async fn relay_publishes_codex_polling_to_a() {
-        let _guard = codex_home_lock().lock().await;
+        let _guard = env_lock().lock().await;
 
         let temp = tempdir().unwrap();
         let codex_home = temp.path().join("codex");
@@ -1245,7 +1594,7 @@ mod tests {
 
     #[tokio::test]
     async fn communication_gate_codex_to_claude() {
-        let _guard = codex_home_lock().lock().await;
+        let _guard = env_lock().lock().await;
 
         let temp = tempdir().unwrap();
         let codex_home = temp.path().join("codex");
@@ -1333,7 +1682,7 @@ mod tests {
 
     #[tokio::test]
     async fn codex_manual_input_keeps_existing_transcript_binding() {
-        let _guard = codex_home_lock().lock().await;
+        let _guard = env_lock().lock().await;
 
         let temp = tempdir().unwrap();
         let codex_home = temp.path().join("codex");
@@ -1418,7 +1767,7 @@ mod tests {
 
     #[tokio::test]
     async fn codex_rebinds_when_next_prompt_appears_in_new_rollout() {
-        let _guard = codex_home_lock().lock().await;
+        let _guard = env_lock().lock().await;
 
         let temp = tempdir().unwrap();
         let codex_home = temp.path().join("codex");

@@ -26,7 +26,8 @@ relay log/status, `Ctrl-Z` cycles layout preset/maximize mode, `Ctrl-P`
 pauses/resumes relay delivery, `Ctrl-L` toggles rows/columns, `Ctrl-Q` quits,
 `PageUp/PageDown` scroll the focused pane, and mouse drag copies text from one
 pane via OSC52. Set `CDUO_RELAY_PREFIX` to prepend a short instruction to
-relayed messages.
+relayed messages. Set `CDUO_MAX_RELAY_TURNS` to stop automatic relay after N
+publishes, or output `CDUO_STOP_RELAY` from an agent to stop automatic relay.
 
 Full documentation is available in the project repository:
 
