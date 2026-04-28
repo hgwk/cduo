@@ -16,7 +16,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::hook::HookEvent;
 use crate::message::Message;
-use crate::message_bus::MessageBus;
+use crate::message_bus::{MessageBus, PublishResult};
 use crate::pair_router::PairRouter;
 use crate::relay_core::{
     count_claude_stop_hook_summaries, discover_recent_claude_transcript,
@@ -25,6 +25,8 @@ use crate::relay_core::{
     read_claude_transcript_with_retry, submit_delay_for_agent,
 };
 use crate::transcripts::{self, TranscriptOutput};
+
+const SHORT_OUTPUT_SUPPRESSION_LIMIT: usize = 6;
 
 #[derive(Debug, Clone)]
 pub enum RelayControl {
@@ -66,210 +68,301 @@ pub async fn run(inputs: RelayInputs) {
 
     let mut bus = MessageBus::new();
     let router = PairRouter::new("a", "b");
-    let mut rx_a = bus.subscribe("a");
-    let mut rx_b = bus.subscribe("b");
+    let rx_a = bus.subscribe("a");
+    let rx_b = bus.subscribe("b");
 
-    let mut codex_transcripts: HashMap<String, PathBuf> = HashMap::new();
-    let mut codex_last_signatures: HashMap<String, String> = HashMap::new();
-    let mut claude_last_signatures: HashMap<String, String> = HashMap::new();
-    let mut claude_last_stop_counts: HashMap<String, usize> = HashMap::new();
-    let mut claude_transcripts: HashMap<String, PathBuf> = HashMap::new();
-    let mut codex_pending_prompts: HashMap<String, String> = HashMap::new();
-    let mut controls = RelayControlState::from_env();
+    let codex_transcripts: HashMap<String, PathBuf> = HashMap::new();
+    let codex_last_signatures: HashMap<String, String> = HashMap::new();
+    let claude_last_signatures: HashMap<String, String> = HashMap::new();
+    let claude_last_stop_counts: HashMap<String, usize> = HashMap::new();
+    let claude_transcripts: HashMap<String, PathBuf> = HashMap::new();
+    let codex_pending_prompts: HashMap<String, String> = HashMap::new();
+    let controls = RelayControlState::from_env();
 
     log_event(&log_path, "native_relay_start");
+    let mut state = RelayState {
+        bus,
+        router,
+        rx_a,
+        rx_b,
+        codex_transcripts,
+        codex_last_signatures,
+        claude_last_signatures,
+        claude_last_stop_counts,
+        claude_transcripts,
+        codex_pending_prompts,
+        controls,
+    };
 
     loop {
         tokio::select! {
             Some((pane_id, prompt)) = input_rx.recv() => {
-                let prompt = normalize_prompt_text(&prompt);
-                if pane_uses_codex(&pane_agents, &pane_id) && !prompt.is_empty() {
-                    log_event(
-                        &log_path,
-                        format!("codex_input source={pane_id} text=\"{}\"", preview(&prompt)),
-                    );
-                    codex_pending_prompts.insert(pane_id.clone(), prompt);
-                }
-                deliver_via_channel(
-                    &log_path,
-                    &mut rx_a,
-                    &mut rx_b,
-                    &write_tx,
-                    &pane_agents,
-                    &mut codex_pending_prompts,
-                ).await;
+                handle_relay_input(&pane_id, &prompt, &pane_agents, &log_path, &mut state);
+                state.flush_deliveries(&log_path, &write_tx, &pane_agents).await;
             }
             Some(control) = control_rx.recv() => {
-                match control {
-                    RelayControl::ManualRelay { pane_id } => {
-                        manual_relay(
-                            &pane_id,
-                            ManualRelayContext {
-                                router: &router,
-                                controls: &controls,
-                                pane_agents: &pane_agents,
-                                codex_transcripts: &codex_transcripts,
-                                claude_transcripts: &claude_transcripts,
-                                pending_prompts: &mut codex_pending_prompts,
-                                write_tx: &write_tx,
-                                log_path: &log_path,
-                            },
-                        )
-                        .await;
-                    }
-                    RelayControl::SetRoute { source, target, enabled } => {
-                        if controls.set_route_enabled(&source, &target, enabled) {
-                            log_event(
-                                &log_path,
-                                format!("route source={source} target={target} enabled={enabled}"),
-                            );
-                        }
-                    }
-                    RelayControl::SetPrefix(prefix) => {
-                        controls.set_delivery_prefix(prefix.unwrap_or_default());
-                        log_event(
-                            &log_path,
-                            format!(
-                                "prefix {}",
-                                controls.delivery_prefix.as_deref().map(preview).unwrap_or_else(|| "off".to_string())
-                            ),
-                        );
-                    }
-                }
+                handle_relay_control(control, &pane_agents, &write_tx, &log_path, &mut state).await;
             }
             _ = tokio::time::sleep(Duration::from_millis(250)) => {
-                for pane in ["a", "b"] {
-                    if !pane_uses_codex(&pane_agents, pane) {
-                        continue;
-                    }
-                    let pane_id = pane.to_string();
-                    ensure_codex_transcript_local(
-                        &pane_id,
-                        &mut codex_transcripts,
-                        &codex_pending_prompts,
-                        &cwd,
-                        started_at,
-                        &log_path,
-                    );
-                    let Some(path) = codex_transcripts.get(&pane_id) else {
-                        continue;
-                    };
-                    let output = drop_seen_signature(
-                        &pane_id,
-                        transcripts::codex::read_last_assistant(path),
-                        &mut codex_last_signatures,
-                    );
-                    if output.output.is_empty() || output.output.len() <= 6 {
-                        continue;
-                    }
-                    publish_transcript_output_with_controls(
-                        &mut bus,
-                        &router,
-                        &log_path,
-                        &pane_id,
-                        &output,
-                        &mut controls,
-                    );
-                }
-                deliver_via_channel(
-                    &log_path,
-                    &mut rx_a,
-                    &mut rx_b,
-                    &write_tx,
+                poll_codex_transcripts(
+                    &cwd,
+                    started_at,
                     &pane_agents,
-                    &mut codex_pending_prompts,
-                ).await;
+                    &log_path,
+                    &mut state,
+                );
+                state.flush_deliveries(&log_path, &write_tx, &pane_agents).await;
             }
             Some(event) = hook_rx.recv() => {
-                let pane_id = event.terminal_id;
-                if !pane_uses_claude(&pane_agents, &pane_id) {
-                    continue;
-                }
-                let transcript_path = event
-                    .transcript_path
-                    .as_deref()
-                    .map(PathBuf::from)
-                    .or_else(|| {
-                        let used_by_other_pane = claude_transcripts
-                            .iter()
-                            .filter(|(source, _)| source.as_str() != pane_id)
-                            .map(|(_, path)| path.clone())
-                            .collect::<std::collections::HashSet<_>>();
-                        let discovered = discover_recent_claude_transcript(
-                            &cwd,
-                            started_at,
-                            &used_by_other_pane,
-                        );
-                        if let Some(path) = &discovered {
-                            log_event(
-                                &log_path,
-                                format!(
-                                    "claude_transcript_fallback source={pane_id} path={}",
-                                    path.display()
-                                ),
-                            );
-                        }
-                        discovered
-                    });
-                if let Some(path) = transcript_path.as_ref() {
-                    claude_transcripts.insert(pane_id.clone(), path.clone());
-                }
-
-                let output = if let Some(path) = transcript_path.as_deref() {
-                    let previous = claude_last_signatures.get(&pane_id).cloned();
-                    let previous_stop_count = claude_last_stop_counts
-                        .get(&pane_id)
-                        .copied()
-                        .unwrap_or(0);
-                    let output = read_claude_transcript_with_retry(
-                        path,
-                        previous.as_ref(),
-                        previous_stop_count,
-                    )
-                    .await;
-                    let new_stop_count = count_claude_stop_hook_summaries(path);
-                    if new_stop_count > previous_stop_count {
-                        claude_last_stop_counts.insert(pane_id.clone(), new_stop_count);
-                    }
-                    drop_seen_signature(&pane_id, output, &mut claude_last_signatures)
-                } else {
-                    TranscriptOutput::empty()
-                };
-
-                log_event(
-                    &log_path,
-                    format!(
-                        "hook_event source={pane_id} transcript={} output_len={} text=\"{}\"",
-                        transcript_path
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_default(),
-                        output.output.len(),
-                        preview(&output.output)
-                    ),
-                );
-
-                publish_transcript_output_with_controls(
-                    &mut bus,
-                    &router,
-                    &log_path,
-                    &pane_id,
-                    &output,
-                    &mut controls,
-                );
-                deliver_via_channel(
-                    &log_path,
-                    &mut rx_a,
-                    &mut rx_b,
-                    &write_tx,
+                handle_claude_hook_event(
+                    event,
+                    &cwd,
+                    started_at,
                     &pane_agents,
-                    &mut codex_pending_prompts,
+                    &log_path,
+                    &mut state,
                 ).await;
+                state.flush_deliveries(&log_path, &write_tx, &pane_agents).await;
             }
             _ = shutdown_rx.recv() => break,
         }
     }
     log_event(&log_path, "native_relay_stop");
+}
+
+struct RelayState {
+    bus: MessageBus,
+    router: PairRouter,
+    rx_a: mpsc::Receiver<Message>,
+    rx_b: mpsc::Receiver<Message>,
+    codex_transcripts: HashMap<String, PathBuf>,
+    codex_last_signatures: HashMap<String, String>,
+    claude_last_signatures: HashMap<String, String>,
+    claude_last_stop_counts: HashMap<String, usize>,
+    claude_transcripts: HashMap<String, PathBuf>,
+    codex_pending_prompts: HashMap<String, String>,
+    controls: RelayControlState,
+}
+
+impl RelayState {
+    async fn flush_deliveries(
+        &mut self,
+        log_path: &std::path::Path,
+        write_tx: &mpsc::Sender<(String, Vec<u8>)>,
+        pane_agents: &HashMap<String, String>,
+    ) {
+        deliver_via_channel(
+            log_path,
+            &mut self.rx_a,
+            &mut self.rx_b,
+            write_tx,
+            pane_agents,
+            &mut self.codex_pending_prompts,
+        )
+        .await;
+    }
+}
+
+fn handle_relay_input(
+    pane_id: &str,
+    prompt: &str,
+    pane_agents: &HashMap<String, String>,
+    log_path: &std::path::Path,
+    state: &mut RelayState,
+) {
+    let prompt = normalize_prompt_text(prompt);
+    if pane_uses_codex(pane_agents, pane_id) && !prompt.is_empty() {
+        log_event(
+            log_path,
+            format!("codex_input source={pane_id} text=\"{}\"", preview(&prompt)),
+        );
+        state
+            .codex_pending_prompts
+            .insert(pane_id.to_string(), prompt);
+    }
+}
+
+async fn handle_relay_control(
+    control: RelayControl,
+    pane_agents: &HashMap<String, String>,
+    write_tx: &mpsc::Sender<(String, Vec<u8>)>,
+    log_path: &std::path::Path,
+    state: &mut RelayState,
+) {
+    match control {
+        RelayControl::ManualRelay { pane_id } => {
+            manual_relay(
+                &pane_id,
+                ManualRelayContext {
+                    router: &state.router,
+                    controls: &state.controls,
+                    pane_agents,
+                    codex_transcripts: &state.codex_transcripts,
+                    claude_transcripts: &state.claude_transcripts,
+                    pending_prompts: &mut state.codex_pending_prompts,
+                    write_tx,
+                    log_path,
+                },
+            )
+            .await;
+        }
+        RelayControl::SetRoute {
+            source,
+            target,
+            enabled,
+        } => {
+            if state.controls.set_route_enabled(&source, &target, enabled) {
+                log_event(
+                    log_path,
+                    format!("route source={source} target={target} enabled={enabled}"),
+                );
+            }
+        }
+        RelayControl::SetPrefix(prefix) => {
+            state
+                .controls
+                .set_delivery_prefix(prefix.unwrap_or_default());
+            log_event(
+                log_path,
+                format!(
+                    "prefix {}",
+                    state
+                        .controls
+                        .delivery_prefix
+                        .as_deref()
+                        .map(preview)
+                        .unwrap_or_else(|| "off".to_string())
+                ),
+            );
+        }
+    }
+}
+
+fn poll_codex_transcripts(
+    cwd: &std::path::Path,
+    started_at: DateTime<Utc>,
+    pane_agents: &HashMap<String, String>,
+    log_path: &std::path::Path,
+    state: &mut RelayState,
+) {
+    for pane in ["a", "b"] {
+        if !pane_uses_codex(pane_agents, pane) {
+            continue;
+        }
+        let pane_id = pane.to_string();
+        ensure_codex_transcript_local(
+            &pane_id,
+            &mut state.codex_transcripts,
+            &state.codex_pending_prompts,
+            cwd,
+            started_at,
+            log_path,
+        );
+        let Some(path) = state.codex_transcripts.get(&pane_id) else {
+            continue;
+        };
+        let output = drop_seen_signature(
+            &pane_id,
+            transcripts::codex::read_last_assistant(path),
+            &mut state.codex_last_signatures,
+        );
+        if should_suppress_transcript_output(&output.output) {
+            continue;
+        }
+        publish_transcript_output_with_controls(
+            &mut state.bus,
+            &state.router,
+            log_path,
+            &pane_id,
+            &output,
+            &mut state.controls,
+        );
+    }
+}
+
+async fn handle_claude_hook_event(
+    event: HookEvent,
+    cwd: &std::path::Path,
+    started_at: DateTime<Utc>,
+    pane_agents: &HashMap<String, String>,
+    log_path: &std::path::Path,
+    state: &mut RelayState,
+) {
+    let pane_id = event.terminal_id;
+    if !pane_uses_claude(pane_agents, &pane_id) {
+        return;
+    }
+    let transcript_path = event
+        .transcript_path
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| {
+            let used_by_other_pane = state
+                .claude_transcripts
+                .iter()
+                .filter(|(source, _)| source.as_str() != pane_id)
+                .map(|(_, path)| path.clone())
+                .collect::<std::collections::HashSet<_>>();
+            let discovered =
+                discover_recent_claude_transcript(cwd, started_at, &used_by_other_pane);
+            if let Some(path) = &discovered {
+                log_event(
+                    log_path,
+                    format!(
+                        "claude_transcript_fallback source={pane_id} path={}",
+                        path.display()
+                    ),
+                );
+            }
+            discovered
+        });
+    if let Some(path) = transcript_path.as_ref() {
+        state
+            .claude_transcripts
+            .insert(pane_id.clone(), path.clone());
+    }
+
+    let output = if let Some(path) = transcript_path.as_deref() {
+        let previous = state.claude_last_signatures.get(&pane_id).cloned();
+        let previous_stop_count = state
+            .claude_last_stop_counts
+            .get(&pane_id)
+            .copied()
+            .unwrap_or(0);
+        let output =
+            read_claude_transcript_with_retry(path, previous.as_ref(), previous_stop_count).await;
+        let new_stop_count = count_claude_stop_hook_summaries(path);
+        if new_stop_count > previous_stop_count {
+            state
+                .claude_last_stop_counts
+                .insert(pane_id.clone(), new_stop_count);
+        }
+        drop_seen_signature(&pane_id, output, &mut state.claude_last_signatures)
+    } else {
+        TranscriptOutput::empty()
+    };
+
+    log_event(
+        log_path,
+        format!(
+            "hook_event source={pane_id} transcript={} output_len={} text=\"{}\"",
+            transcript_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            output.output.len(),
+            preview(&output.output)
+        ),
+    );
+
+    publish_transcript_output_with_controls(
+        &mut state.bus,
+        &state.router,
+        log_path,
+        &pane_id,
+        &output,
+        &mut state.controls,
+    );
 }
 
 async fn deliver_via_channel(
@@ -317,10 +410,17 @@ async fn send_relay_via_channel(
     bundle.extend_from_slice(b"\x1b[201~");
     let _ = write_tx.send((target.to_string(), bundle)).await;
 
-    let delay = submit_delay_for_agent(target_agent);
-    tokio::time::sleep(Duration::from_millis(delay)).await;
+    schedule_submit(write_tx, target, target_agent);
+}
 
-    let _ = write_tx.send((target.to_string(), b"\r".to_vec())).await;
+fn schedule_submit(write_tx: &mpsc::Sender<(String, Vec<u8>)>, target: &str, target_agent: &str) {
+    let write_tx = write_tx.clone();
+    let target = target.to_string();
+    let delay = submit_delay_for_agent(target_agent);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        let _ = write_tx.send((target, b"\r".to_vec())).await;
+    });
 }
 
 struct ManualRelayContext<'a> {
@@ -365,7 +465,7 @@ async fn manual_relay(pane_id: &str, ctx: ManualRelayContext<'_>) {
         TranscriptOutput::empty()
     };
 
-    if output.output.is_empty() || output.output.len() <= 6 {
+    if should_suppress_transcript_output(&output.output) {
         log_event(
             ctx.log_path,
             format!("manual source={pane_id} target={target} skipped=no_output"),
@@ -418,8 +518,8 @@ fn ensure_codex_transcript_local(
         .filter(|(source, _)| source.as_str() != pane_id)
         .map(|(_, path)| path.clone())
         .collect::<std::collections::HashSet<_>>();
-    let excluded = std::collections::HashSet::new();
-    let Some(path) = discover_recent_codex_transcript(cwd, started_at, &excluded, expected_prompt)
+    let Some(path) =
+        discover_recent_codex_transcript(cwd, started_at, &used_by_other_pane, expected_prompt)
     else {
         let fallback = discover_recent_codex_transcripts(cwd, started_at)
             .into_iter()
@@ -552,7 +652,7 @@ fn publish_transcript_output_with_controls(
     output: &TranscriptOutput,
     controls: &mut RelayControlState,
 ) -> bool {
-    if output.output.is_empty() || output.output.len() <= 6 {
+    if should_suppress_transcript_output(&output.output) {
         return false;
     }
     if RelayControlState::should_stop_for_marker(&output.output) {
@@ -595,18 +695,22 @@ fn publish_transcript_output_with_controls(
     let delivered_len = content.len();
     let delivered_preview = preview(&content);
     let relay_msg = Message::new_relay(&source, &target, &content);
-    let published = bus.publish(relay_msg);
-    if published {
+    let publish_result = bus.publish(relay_msg);
+    if publish_result == PublishResult::Delivered {
         controls.record_auto_publish();
     }
     log_event(
         log_path,
         format!(
             "{} source={source} target={target} len={delivered_len} text=\"{delivered_preview}\"",
-            if published { "publish" } else { "dedup" }
+            publish_result.log_label()
         ),
     );
-    published
+    publish_result.is_delivered()
+}
+
+fn should_suppress_transcript_output(output: &str) -> bool {
+    output.trim().is_empty() || output.len() <= SHORT_OUTPUT_SUPPRESSION_LIMIT
 }
 
 #[cfg(test)]
@@ -656,19 +760,28 @@ mod tests {
         out
     }
 
-    /// Wait until `rx` has produced at least one bracketed-paste body, or the
-    /// deadline expires. Returns whatever was collected.
+    /// Wait until `rx` has produced at least one bracketed-paste body and its
+    /// delayed Enter, or the deadline expires. When the paste arrives near the
+    /// deadline, allow a small submit-delay grace period so tests still observe
+    /// the scheduled Enter.
     async fn collect_writes(
         rx: &mut mpsc::Receiver<(String, Vec<u8>)>,
         within: Duration,
     ) -> Vec<(String, Vec<u8>)> {
         let mut out = Vec::new();
-        let deadline = tokio::time::Instant::now() + within;
+        let mut deadline = tokio::time::Instant::now() + within;
         while tokio::time::Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             match timeout(remaining, rx.recv()).await {
                 Ok(Some(item)) => {
+                    let is_paste = String::from_utf8_lossy(&item.1).contains("\x1b[200~");
                     out.push(item);
+                    if is_paste {
+                        let submit_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                        if submit_deadline > deadline {
+                            deadline = submit_deadline;
+                        }
+                    }
                     if out.iter().any(|(_, bytes)| bytes == b"\r") {
                         break;
                     }
@@ -679,6 +792,29 @@ mod tests {
         }
         // Soak up any straggling bytes that arrive immediately after.
         out.extend(drain_writes(rx));
+        if out
+            .iter()
+            .any(|(_, bytes)| String::from_utf8_lossy(bytes).contains("\x1b[200~"))
+            && !out.iter().any(|(_, bytes)| bytes == b"\r")
+        {
+            let submit_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            while tokio::time::Instant::now() < submit_deadline {
+                let remaining =
+                    submit_deadline.saturating_duration_since(tokio::time::Instant::now());
+                match timeout(remaining, rx.recv()).await {
+                    Ok(Some(item)) => {
+                        let is_enter = item.1 == b"\r";
+                        out.push(item);
+                        if is_enter {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            out.extend(drain_writes(rx));
+        }
         out
     }
 
@@ -781,6 +917,16 @@ mod tests {
 
     fn transcript_output(text: &str) -> TranscriptOutput {
         TranscriptOutput::new(text.to_string(), format!("test-signature-{text}"))
+    }
+
+    #[test]
+    fn short_transcript_output_policy_has_explicit_boundaries() {
+        assert!(should_suppress_transcript_output(""));
+        assert!(should_suppress_transcript_output("OK"));
+        assert!(should_suppress_transcript_output("Done."));
+        assert!(should_suppress_transcript_output("123456"));
+        assert!(!should_suppress_transcript_output("1234567"));
+        assert!(!should_suppress_transcript_output("valid longer response"));
     }
 
     #[test]
@@ -953,6 +1099,75 @@ mod tests {
         );
         let writes = collect_writes(&mut write_rx, Duration::from_secs(1)).await;
         assert_relay_writes(&writes, "b", answer);
+    }
+
+    #[tokio::test]
+    async fn relay_delivery_schedules_enter_without_blocking_next_paste() {
+        let temp = tempdir().unwrap();
+        let log_path = temp.path().join("relay.log");
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "claude".to_string()),
+            ("b".to_string(), "claude".to_string()),
+        ]);
+        let mut bus = MessageBus::new();
+        let mut rx_a = bus.subscribe("a");
+        let mut rx_b = bus.subscribe("b");
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(8);
+        let mut pending_prompts = HashMap::new();
+
+        assert_eq!(
+            bus.publish(Message::new_relay("test", "a", "FIRST_DELAYED_PASTE")),
+            PublishResult::Delivered
+        );
+        assert_eq!(
+            bus.publish(Message::new_relay("test", "b", "SECOND_DELAYED_PASTE")),
+            PublishResult::Delivered
+        );
+
+        deliver_via_channel(
+            &log_path,
+            &mut rx_a,
+            &mut rx_b,
+            &write_tx,
+            &pane_agents,
+            &mut pending_prompts,
+        )
+        .await;
+
+        let mut writes_before_enter = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+        while tokio::time::Instant::now() < deadline {
+            match timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                write_rx.recv(),
+            )
+            .await
+            {
+                Ok(Some(item)) => writes_before_enter.push(item),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        writes_before_enter.extend(drain_writes(&mut write_rx));
+        let paste_count = writes_before_enter
+            .iter()
+            .filter(|(_, bytes)| String::from_utf8_lossy(bytes).contains("\x1b[200~"))
+            .count();
+        assert_eq!(
+            paste_count, 2,
+            "both paste bundles should be queued before Claude's submit delay elapses"
+        );
+        assert!(
+            writes_before_enter.iter().all(|(_, bytes)| bytes != b"\r"),
+            "Enter should remain delayed instead of blocking the relay drain"
+        );
+
+        let writes_after_delay = collect_writes(&mut write_rx, Duration::from_secs(2)).await;
+        let enter_count = writes_after_delay
+            .iter()
+            .filter(|(_, bytes)| bytes == b"\r")
+            .count();
+        assert_eq!(enter_count, 2, "each delayed paste should still submit");
     }
 
     #[test]
@@ -1681,9 +1896,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_manual_input_keeps_existing_transcript_binding() {
+    async fn codex_transcript_binding_excludes_rollout_bound_to_other_pane() {
         let _guard = env_lock().lock().await;
 
+        let temp = tempdir().unwrap();
+        let codex_home = temp.path().join("codex");
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let prev_codex_home = std::env::var_os("CODEX_HOME");
+        std::env::set_var("CODEX_HOME", &codex_home);
+
+        let started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let session_ts = chrono::Utc::now() + chrono::Duration::seconds(1);
+        let prompt = "SAME_PROMPT_FOR_TWO_CODEX_PANES";
+        let first_rollout = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("28")
+            .join("rollout-first-pane.jsonl");
+        let second_rollout = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("28")
+            .join("rollout-second-pane.jsonl");
+        write_codex_rollout(
+            &first_rollout,
+            &cwd,
+            session_ts,
+            prompt,
+            "FIRST_PANE_ANSWER",
+        );
+        write_codex_rollout(
+            &second_rollout,
+            &cwd,
+            session_ts,
+            prompt,
+            "SECOND_PANE_ANSWER",
+        );
+
+        let mut transcripts = HashMap::from([("b".to_string(), second_rollout.clone())]);
+        let pending_prompts = HashMap::from([("a".to_string(), prompt.to_string())]);
+
+        ensure_codex_transcript_local(
+            "a",
+            &mut transcripts,
+            &pending_prompts,
+            &cwd,
+            started_at,
+            &temp.path().join("relay.log"),
+        );
+
+        restore_codex_home(prev_codex_home);
+
+        assert_eq!(
+            transcripts.get("a"),
+            Some(&first_rollout),
+            "Codex pane A should not bind to the rollout already owned by pane B"
+        );
+        assert_eq!(
+            transcripts.get("b"),
+            Some(&second_rollout),
+            "Codex pane B should keep its existing rollout binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_manual_input_keeps_existing_transcript_binding() {
+        let _guard = env_lock().lock().await;
         let temp = tempdir().unwrap();
         let codex_home = temp.path().join("codex");
         let cwd = temp.path().join("project");

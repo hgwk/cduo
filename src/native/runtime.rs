@@ -19,6 +19,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
+use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::cli::{Agent, SplitLayout};
@@ -61,7 +62,11 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
     // Validate flags before allocating anything else.
     AccessMode::from_flags(opts.yolo, opts.full_access)?;
 
-    let hook_port = find_available_port(preferred_hook_port()).await?;
+    let hook_listener = bind_hook_listener(preferred_hook_port()).await?;
+    let hook_port = hook_listener
+        .local_addr()
+        .context("read hook listener address")?
+        .port();
     let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(64);
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let (input_tx, input_rx) = mpsc::channel::<(String, String)>(64);
@@ -76,7 +81,7 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
     tokio::spawn({
         let shutdown_rx = shutdown_tx.subscribe();
         async move {
-            hook::run_hook_server(hook_port, shutdown_rx, hook_tx).await;
+            hook::run_hook_server_on_listener(hook_listener, shutdown_rx, hook_tx).await;
         }
     });
 
@@ -120,16 +125,19 @@ fn native_log_path() -> Result<PathBuf> {
     Ok(dir.join(format!("session-{stamp}.log")))
 }
 
-async fn find_available_port(start: u16) -> Result<u16> {
-    for port in start..start + 100 {
-        if tokio::net::TcpListener::bind(("127.0.0.1", port))
-            .await
-            .is_ok()
-        {
-            return Ok(port);
+async fn bind_hook_listener(start: u16) -> Result<TcpListener> {
+    let mut last_port = start;
+    for port in candidate_hook_ports(start) {
+        last_port = port;
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)).await {
+            return Ok(listener);
         }
     }
-    anyhow::bail!("No available port found in range {start}-{}", start + 99)
+    anyhow::bail!("No available port found in range {start}-{last_port}")
+}
+
+fn candidate_hook_ports(start: u16) -> impl Iterator<Item = u16> {
+    (0..100).filter_map(move |offset| start.checked_add(offset))
 }
 
 fn preferred_hook_port() -> u16 {
@@ -232,27 +240,18 @@ fn ui_loop(
 
     'main: loop {
         if !relay_paused {
-            while let Some((target, bytes)) = paused_writes.pop_front() {
-                write_to_target(&mut panes, &target, &bytes);
-            }
+            drain_paused_writes(&mut panes, &mut paused_writes, log_path);
         }
 
-        // Drain any pending relay writes (bracketed-paste bundles + Enter)
-        // and forward them to the right pane's PTY.
-        loop {
-            match write_rx.try_recv() {
-                Ok((target, bytes)) => {
-                    if relay_paused {
-                        paused_writes.push_back((target, bytes));
-                        footer_msg = pause_footer(paused_writes.len());
-                        dirty = true;
-                    } else {
-                        write_to_target(&mut panes, &target, &bytes);
-                    }
-                }
-                Err(mpsc::error::TryRecvError::Empty) => break,
-                Err(mpsc::error::TryRecvError::Disconnected) => break,
-            }
+        if drain_relay_writes(
+            &mut panes,
+            &mut write_rx,
+            relay_paused,
+            &mut paused_writes,
+            log_path,
+            &mut footer_msg,
+        ) {
+            dirty = true;
         }
 
         let mut produced = false;
@@ -344,12 +343,17 @@ fn ui_loop(
                         }
                         GlobalAction::ManualRelay => {
                             let pane_id = focus.0.label().to_string();
-                            let _ = control_tx.try_send(relay::RelayControl::ManualRelay {
-                                pane_id: pane_id.clone(),
-                            });
-                            footer_msg = format!(
-                                " manual relay requested from pane {} ",
-                                pane_id.to_uppercase()
+                            footer_msg = send_control_or_footer(
+                                &control_tx,
+                                relay::RelayControl::ManualRelay {
+                                    pane_id: pane_id.clone(),
+                                },
+                                || {
+                                    format!(
+                                        " manual relay requested from pane {} ",
+                                        pane_id.to_uppercase()
+                                    )
+                                },
                             );
                             dirty = true;
                         }
@@ -361,22 +365,28 @@ fn ui_loop(
                         }
                         GlobalAction::ToggleRelayAToB => {
                             a_to_b_enabled = !a_to_b_enabled;
-                            let _ = control_tx.try_send(relay::RelayControl::SetRoute {
-                                source: "a".to_string(),
-                                target: "b".to_string(),
-                                enabled: a_to_b_enabled,
-                            });
-                            footer_msg = route_footer("A→B", a_to_b_enabled);
+                            footer_msg = send_control_or_footer(
+                                &control_tx,
+                                relay::RelayControl::SetRoute {
+                                    source: "a".to_string(),
+                                    target: "b".to_string(),
+                                    enabled: a_to_b_enabled,
+                                },
+                                || route_footer("A→B", a_to_b_enabled),
+                            );
                             dirty = true;
                         }
                         GlobalAction::ToggleRelayBToA => {
                             b_to_a_enabled = !b_to_a_enabled;
-                            let _ = control_tx.try_send(relay::RelayControl::SetRoute {
-                                source: "b".to_string(),
-                                target: "a".to_string(),
-                                enabled: b_to_a_enabled,
-                            });
-                            footer_msg = route_footer("B→A", b_to_a_enabled);
+                            footer_msg = send_control_or_footer(
+                                &control_tx,
+                                relay::RelayControl::SetRoute {
+                                    source: "b".to_string(),
+                                    target: "a".to_string(),
+                                    enabled: b_to_a_enabled,
+                                },
+                                || route_footer("B→A", b_to_a_enabled),
+                            );
                             dirty = true;
                         }
                         GlobalAction::ShowRelayLog => {
@@ -420,7 +430,9 @@ fn ui_loop(
                         GlobalAction::Forward => {
                             if let Some(bytes) = key_to_bytes(key) {
                                 let idx = focus_index(focus);
-                                let _ = panes[idx].write(&bytes);
+                                if let Err(err) = panes[idx].write(&bytes) {
+                                    footer_msg = write_error_footer(focus.0.label(), &err);
+                                }
                                 capture_line(focus.0, &bytes, &mut input_buf, &input_tx);
                             }
                         }
@@ -518,13 +530,75 @@ fn ui_loop(
     Ok(())
 }
 
-fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) {
+fn drain_paused_writes(
+    panes: &mut [Pane; 2],
+    paused_writes: &mut VecDeque<(String, Vec<u8>)>,
+    log_path: &std::path::Path,
+) {
+    while let Some((target, bytes)) = paused_writes.pop_front() {
+        if let Err(err) = write_to_target(panes, &target, &bytes) {
+            crate::relay_core::log_event(
+                log_path,
+                format!("relay_write_error target={target} error=\"{err}\""),
+            );
+        }
+    }
+}
+
+fn drain_relay_writes(
+    panes: &mut [Pane; 2],
+    write_rx: &mut mpsc::Receiver<(String, Vec<u8>)>,
+    relay_paused: bool,
+    paused_writes: &mut VecDeque<(String, Vec<u8>)>,
+    log_path: &std::path::Path,
+    footer_msg: &mut String,
+) -> bool {
+    let mut dirty = false;
+    loop {
+        match write_rx.try_recv() {
+            Ok((target, bytes)) => {
+                if relay_paused {
+                    paused_writes.push_back((target, bytes));
+                    *footer_msg = pause_footer(paused_writes.len());
+                    dirty = true;
+                } else if let Err(err) = write_to_target(panes, &target, &bytes) {
+                    crate::relay_core::log_event(
+                        log_path,
+                        format!("relay_write_error target={target} error=\"{err}\""),
+                    );
+                    *footer_msg = write_error_footer(&target, &err);
+                    dirty = true;
+                }
+            }
+            Err(mpsc::error::TryRecvError::Empty) => break,
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
+        }
+    }
+    dirty
+}
+
+fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) -> Result<()> {
     let idx = match target {
         "a" => 0,
         "b" => 1,
-        _ => return,
+        _ => return Ok(()),
     };
-    let _ = panes[idx].write(bytes);
+    panes[idx].write(bytes)
+}
+
+fn send_control_or_footer(
+    control_tx: &mpsc::Sender<relay::RelayControl>,
+    control: relay::RelayControl,
+    success_footer: impl FnOnce() -> String,
+) -> String {
+    match control_tx.try_send(control) {
+        Ok(()) => success_footer(),
+        Err(err) => format!(" relay control unavailable · {err} "),
+    }
+}
+
+fn write_error_footer(target: &str, err: &dyn std::fmt::Display) -> String {
+    format!(" relay write failed for pane {target} · {err} ")
 }
 
 fn pause_footer(queued_writes: usize) -> String {
@@ -616,6 +690,26 @@ mod tests {
         std::env::remove_var("PORT");
     }
 
+    #[test]
+    fn candidate_hook_ports_stops_at_u16_max_without_overflow() {
+        let ports: Vec<u16> = candidate_hook_ports(u16::MAX - 1).collect();
+        assert_eq!(ports, vec![u16::MAX - 1, u16::MAX]);
+    }
+
+    #[tokio::test]
+    async fn bind_hook_listener_skips_busy_port_and_keeps_listener_bound() {
+        let busy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let busy_port = busy.local_addr().unwrap().port();
+
+        let listener = bind_hook_listener(busy_port).await.unwrap();
+        let selected_port = listener.local_addr().unwrap().port();
+
+        assert_ne!(selected_port, busy_port);
+        assert!(TcpListener::bind(("127.0.0.1", selected_port))
+            .await
+            .is_err());
+    }
+
     #[tokio::test]
     async fn capture_line_emits_on_cr() {
         let mut buf: HashMap<PaneId, Vec<u8>> = HashMap::new();
@@ -661,5 +755,26 @@ mod tests {
 
         assert_eq!(clear_paused_writes(&mut queue), 2);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn send_control_or_footer_reports_closed_control_channel() {
+        let (tx, rx) = mpsc::channel::<relay::RelayControl>(1);
+        drop(rx);
+
+        let footer = send_control_or_footer(
+            &tx,
+            relay::RelayControl::SetPrefix(Some("prefix".to_string())),
+            || "success".to_string(),
+        );
+
+        assert!(footer.contains("relay control unavailable"));
+    }
+
+    #[test]
+    fn write_error_footer_names_target_pane() {
+        let footer = write_error_footer("a", &std::io::Error::other("closed"));
+        assert!(footer.contains("pane a"));
+        assert!(footer.contains("closed"));
     }
 }

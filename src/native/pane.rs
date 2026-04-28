@@ -1,12 +1,13 @@
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, SyncSender};
 use std::thread;
 
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 
 const SCROLLBACK_LINES: usize = 2_000;
+const PTY_OUTPUT_CHANNEL_CAPACITY: usize = 256;
 
 /// Identifies one of the two panes the runtime owns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,22 +79,11 @@ impl Pane {
         drop(pair.slave);
 
         let writer = pair.master.take_writer()?;
-        let mut reader = pair.master.try_clone_reader()?;
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        thread::spawn(move || {
-            let mut buf = [0u8; 8192];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
+        let reader = pair.master.try_clone_reader()?;
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(PTY_OUTPUT_CHANNEL_CAPACITY);
+        thread::Builder::new()
+            .name(format!("cduo-pty-reader-{}", id.label()))
+            .spawn(move || read_pty_chunks(reader, tx))?;
 
         Ok(Self {
             id,
@@ -167,6 +157,26 @@ impl Pane {
     }
 }
 
+fn read_pty_chunks(mut reader: Box<dyn Read + Send>, tx: SyncSender<Vec<u8>>) {
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+#[cfg(test)]
+fn pty_output_channel_capacity() -> usize {
+    PTY_OUTPUT_CHANNEL_CAPACITY
+}
+
 /// Runtime focus state. Kept separate so it's trivially testable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Focus(pub PaneId);
@@ -201,5 +211,10 @@ mod tests {
     fn pane_id_labels() {
         assert_eq!(PaneId::A.label(), "a");
         assert_eq!(PaneId::B.label(), "b");
+    }
+
+    #[test]
+    fn pty_output_channel_has_bounded_capacity() {
+        assert_eq!(pty_output_channel_capacity(), 256);
     }
 }

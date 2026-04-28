@@ -1,5 +1,6 @@
 use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
 use serde::Deserialize;
+use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Clone)]
@@ -22,8 +23,8 @@ struct HookResponse {
     ok: bool,
 }
 
-pub async fn run_hook_server(
-    port: u16,
+pub async fn run_hook_server_on_listener(
+    listener: TcpListener,
     mut shutdown: broadcast::Receiver<()>,
     relay_tx: mpsc::Sender<HookEvent>,
 ) {
@@ -31,14 +32,10 @@ pub async fn run_hook_server(
         .route("/hook", post(handle_hook))
         .with_state(relay_tx);
 
-    let addr = format!("127.0.0.1:{port}");
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!(target: "cduo::hook", "failed to bind to {addr}: {e}");
-            return;
-        }
-    };
+    let addr = listener
+        .local_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
 
     tracing::info!(target: "cduo::hook", "server listening on {addr}");
 
@@ -84,6 +81,7 @@ mod tests {
     use axum::body::Body;
     use std::io::Write;
     use std::process::{Command, Stdio};
+    use std::time::Duration;
     use tower::util::ServiceExt;
 
     fn make_app() -> (Router, mpsc::Receiver<HookEvent>) {
@@ -339,6 +337,52 @@ mod tests {
             event.transcript_path.as_deref(),
             Some("/tmp/from-template.jsonl")
         );
+    }
+
+    #[tokio::test]
+    async fn bound_hook_server_accepts_requests_without_rebinding() {
+        let (relay_tx, mut rx) = mpsc::channel::<HookEvent>(8);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            run_hook_server_on_listener(listener, shutdown_rx, relay_tx).await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let body = {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let request_body = r#"{"type":"stop","terminal_id":"a"}"#;
+            let request = format!(
+                "POST /hook HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{request_body}",
+                request_body.len()
+            );
+            tokio::io::AsyncWriteExt::write_all(&mut stream, request.as_bytes())
+                .await
+                .unwrap();
+            let mut response = String::new();
+            tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut response)
+                .await
+                .unwrap();
+            response
+        };
+        assert!(body.starts_with("HTTP/1.1 200 OK"));
+        assert!(body.ends_with(r#"{"ok":true}"#));
+
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.terminal_id, "a");
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

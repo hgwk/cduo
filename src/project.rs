@@ -2,6 +2,9 @@ use anyhow::{bail, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 const ORCHESTRATION_START: &str = "<!-- CDUO_ORCHESTRATION_START -->";
 const ORCHESTRATION_END: &str = "<!-- CDUO_ORCHESTRATION_END -->";
 
@@ -59,60 +62,97 @@ pub fn init(force: bool) -> Result<()> {
 
 fn ensure_stop_hook(path: &Path, force: bool) -> Result<bool> {
     let template = template_settings()?;
-    let template_stop = template.get("hooks").and_then(|h| h.get("Stop")).cloned();
+    let Some(template_stop) = template.get("hooks").and_then(|h| h.get("Stop")).cloned() else {
+        return Ok(false);
+    };
 
-    if !path.exists() || force {
-        let mut value = template;
-        if path.exists() && !force {
-            let existing: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
-            value = existing;
-            if let Some(stop) = template_stop {
-                let mut hooks = value.get("hooks").cloned().unwrap_or(serde_json::json!({}));
-                if let Some(hooks_obj) = hooks.as_object_mut() {
-                    hooks_obj.insert("Stop".to_string(), stop);
-                    value["hooks"] = serde_json::Value::Object(hooks_obj.clone());
-                } else {
-                    let mut new_hooks = serde_json::Map::new();
-                    new_hooks.insert("Stop".to_string(), stop);
-                    value["hooks"] = serde_json::Value::Object(new_hooks);
-                }
-            }
-        }
-        fs::write(path, serde_json::to_string_pretty(&value)?)?;
+    if !path.exists() {
+        fs::write(path, serde_json::to_string_pretty(&template)?)?;
         return Ok(true);
     }
 
     let existing: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
-    if let Some(stop) = existing.get("hooks").and_then(|h| h.get("Stop")) {
-        if !stop.is_null() && !stop.as_array().map(|a| a.is_empty()).unwrap_or(true) {
-            if Some(stop) == template_stop.as_ref() {
-                return Ok(false);
-            }
-            if !is_cduo_stop_hook(stop) {
+    if !force {
+        if let Some(stop) = existing.get("hooks").and_then(|h| h.get("Stop")) {
+            if stop == &template_stop || (!is_empty_stop_hook(stop) && !is_cduo_stop_hook(stop)) {
                 return Ok(false);
             }
         }
     }
 
-    let mut value = existing;
-    if let Some(stop) = template_stop {
-        let mut hooks = value.get("hooks").cloned().unwrap_or(serde_json::json!({}));
-        if let Some(hooks_obj) = hooks.as_object_mut() {
-            hooks_obj.insert("Stop".to_string(), stop);
-            value["hooks"] = serde_json::Value::Object(hooks_obj.clone());
-        } else {
-            let mut new_hooks = serde_json::Map::new();
-            new_hooks.insert("Stop".to_string(), stop);
-            value["hooks"] = serde_json::Value::Object(new_hooks);
-        }
-    }
+    let mut value = if force { template } else { existing };
+    set_stop_hook(&mut value, template_stop);
     fs::write(path, serde_json::to_string_pretty(&value)?)?;
     Ok(true)
+}
+
+fn is_empty_stop_hook(stop: &serde_json::Value) -> bool {
+    stop.is_null() || stop.as_array().is_some_and(|entries| entries.is_empty())
+}
+
+fn set_stop_hook(value: &mut serde_json::Value, stop: serde_json::Value) {
+    if !value.is_object() {
+        *value = serde_json::json!({});
+    }
+
+    let root = value.as_object_mut().expect("settings value is object");
+    let hooks = root
+        .entry("hooks".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+
+    if !hooks.is_object() {
+        *hooks = serde_json::json!({});
+    }
+
+    hooks
+        .as_object_mut()
+        .expect("hooks value is object")
+        .insert("Stop".to_string(), stop);
 }
 
 fn is_cduo_stop_hook(stop: &serde_json::Value) -> bool {
     let text = stop.to_string();
     text.contains("/hook") && text.contains("terminal_id")
+}
+
+fn remove_cduo_stop_hooks_from_settings(value: &mut serde_json::Value) -> bool {
+    let mut changed = false;
+
+    if let Some(hooks) = value.get_mut("hooks") {
+        if let Some(obj) = hooks.as_object_mut() {
+            let remove_stop = if let Some(stop) = obj.get_mut("Stop") {
+                if let Some(entries) = stop.as_array_mut() {
+                    let before = entries.len();
+                    entries.retain(|entry| !is_cduo_stop_hook(entry));
+                    changed = entries.len() != before;
+                    entries.is_empty()
+                } else if is_cduo_stop_hook(stop) {
+                    changed = true;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if remove_stop {
+                obj.remove("Stop");
+            }
+        }
+    }
+
+    if value
+        .get("hooks")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(serde_json::Map::is_empty)
+    {
+        if let Some(root) = value.as_object_mut() {
+            root.remove("hooks");
+        }
+    }
+
+    changed
 }
 
 fn ensure_claude_md(path: &Path, force: bool) -> Result<bool> {
@@ -228,18 +268,13 @@ pub fn uninstall() -> Result<()> {
         let content = fs::read_to_string(&paths.settings_target)?;
         let mut value: serde_json::Value = serde_json::from_str(&content)?;
 
-        if let Some(hooks) = value.get_mut("hooks") {
-            if let Some(obj) = hooks.as_object_mut() {
-                obj.remove("Stop");
-                if obj.is_empty() {
-                    if let Some(root) = value.as_object_mut() {
-                        root.remove("hooks");
-                    }
-                }
-            }
+        if remove_cduo_stop_hooks_from_settings(&mut value) {
+            changed = true;
         }
 
-        if let Some(root) = value.as_object() {
+        if !changed {
+            println!("✓ No cduo Stop hook found in .claude/settings.local.json");
+        } else if let Some(root) = value.as_object() {
             if root.is_empty() {
                 fs::remove_file(&paths.settings_target)?;
                 println!("✓ Removed .claude/settings.local.json");
@@ -251,7 +286,6 @@ pub fn uninstall() -> Result<()> {
                 println!("✓ Removed Stop hook from .claude/settings.local.json");
             }
         }
-        changed = true;
     }
 
     if paths.claude_md_target.exists() {
@@ -292,24 +326,54 @@ pub fn uninstall() -> Result<()> {
 }
 
 fn which(command: &str) -> Option<String> {
-    let output = std::process::Command::new("sh")
-        .args(["-c", &format!("command -v {command}")])
-        .output()
-        .ok()?;
+    if command.contains(std::path::MAIN_SEPARATOR) {
+        return executable_path(Path::new(command)).map(|path| path.display().to_string());
+    }
 
-    if output.status.success() {
-        String::from_utf8(output.stdout)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    } else {
-        None
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(':')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| Path::new(segment).join(command))
+        .find_map(|path| executable_path(&path).map(|path| path.display().to_string()))
+}
+
+fn executable_path(path: &Path) -> Option<&Path> {
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+
+    #[cfg(unix)]
+    {
+        (metadata.permissions().mode() & 0o111 != 0).then_some(path)
+    }
+
+    #[cfg(not(unix))]
+    {
+        Some(path)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn make_executable(_path: &Path) {}
 
     #[test]
     fn test_ensure_stop_hook_creates_new() {
@@ -341,6 +405,118 @@ mod tests {
     }
 
     #[test]
+    fn test_ensure_stop_hook_force_overwrites_non_cduo_stop_hook() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "hooks": {
+                    "Stop": [{
+                        "matcher": ".*",
+                        "hooks": [{"type": "command", "command": "python3 custom.py"}]
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let changed = ensure_stop_hook(&path, true).unwrap();
+        assert!(changed);
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(is_cduo_stop_hook(&content["hooks"]["Stop"]));
+        assert!(!content.to_string().contains("custom.py"));
+    }
+
+    #[test]
+    fn test_ensure_stop_hook_preserves_non_cduo_stop_hook_without_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let custom = serde_json::json!({
+            "hooks": {
+                "Stop": [{
+                    "matcher": ".*",
+                    "hooks": [{"type": "command", "command": "python3 custom.py"}]
+                }]
+            }
+        });
+        fs::write(&path, custom.to_string()).unwrap();
+
+        let changed = ensure_stop_hook(&path, false).unwrap();
+        assert!(!changed);
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(content, custom);
+    }
+
+    #[test]
+    fn test_remove_cduo_stop_hooks_preserves_non_cduo_stop_hook() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "Stop": [
+                    {
+                        "matcher": ".*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "python3 custom_stop_hook.py"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        assert!(!remove_cduo_stop_hooks_from_settings(&mut settings));
+        assert_eq!(
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"],
+            "python3 custom_stop_hook.py"
+        );
+    }
+
+    #[test]
+    fn test_remove_cduo_stop_hooks_preserves_mixed_non_cduo_entries() {
+        let template = template_settings().unwrap();
+        let cduo_entry = template["hooks"]["Stop"][0].clone();
+        let custom_entry = serde_json::json!({
+            "matcher": ".*",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": "python3 custom_stop_hook.py"
+                }
+            ]
+        });
+        let mut settings = serde_json::json!({
+            "permissions": { "defaultMode": "accept" },
+            "hooks": {
+                "Stop": [cduo_entry, custom_entry.clone()],
+                "PreToolUse": [{ "matcher": ".*", "hooks": [] }]
+            }
+        });
+
+        assert!(remove_cduo_stop_hooks_from_settings(&mut settings));
+        assert_eq!(settings["hooks"]["Stop"], serde_json::json!([custom_entry]));
+        assert!(settings["hooks"].get("PreToolUse").is_some());
+        assert_eq!(settings["permissions"]["defaultMode"], "accept");
+    }
+
+    #[test]
+    fn test_remove_cduo_stop_hooks_removes_empty_hooks_object() {
+        let template = template_settings().unwrap();
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "Stop": template["hooks"]["Stop"].clone()
+            }
+        });
+
+        assert!(remove_cduo_stop_hooks_from_settings(&mut settings));
+        assert!(settings.get("hooks").is_none());
+    }
+
+    #[test]
     fn test_ensure_claude_md_creates_new() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("CLAUDE.md");
@@ -364,6 +540,46 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("cduo Collaboration Mode"));
         assert!(content.contains("My Project"));
+    }
+
+    #[test]
+    fn which_finds_executable_on_path_without_shell() {
+        let _guard = env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let command_path = tmp.path().join("fake-cduo-command");
+        fs::write(&command_path, "#!/bin/sh\nexit 0\n").unwrap();
+        make_executable(&command_path);
+        let previous_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", tmp.path());
+
+        assert_eq!(
+            which("fake-cduo-command").as_deref(),
+            Some(command_path.to_str().unwrap())
+        );
+
+        if let Some(path) = previous_path {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+    }
+
+    #[test]
+    fn which_ignores_non_executable_files() {
+        let _guard = env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let command_path = tmp.path().join("fake-cduo-command");
+        fs::write(&command_path, "not executable").unwrap();
+        let previous_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", tmp.path());
+
+        assert_eq!(which("fake-cduo-command"), None);
+
+        if let Some(path) = previous_path {
+            std::env::set_var("PATH", path);
+        } else {
+            std::env::remove_var("PATH");
+        }
     }
 
     #[test]

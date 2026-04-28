@@ -8,6 +8,29 @@ struct DedupEntry {
     expires_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishResult {
+    Delivered,
+    NoSubscriber,
+    Deduplicated,
+    SubscriberClosed,
+}
+
+impl PublishResult {
+    pub fn is_delivered(self) -> bool {
+        matches!(self, Self::Delivered)
+    }
+
+    pub fn log_label(self) -> &'static str {
+        match self {
+            Self::Delivered => "publish",
+            Self::NoSubscriber => "no_subscriber",
+            Self::Deduplicated => "dedup",
+            Self::SubscriberClosed => "subscriber_closed",
+        }
+    }
+}
+
 /// A publish/subscribe message bus for routing messages between nodes.
 ///
 /// Each subscriber (identified by a `node_id`) gets an `mpsc::Receiver<Message>`.
@@ -52,31 +75,32 @@ impl MessageBus {
     /// Publish a message to the bus.
     ///
     /// The message is routed to the subscriber whose `node_id` matches
-    /// `msg.target_node_id`. If no such subscriber exists, the message is
-    /// silently discarded.
-    ///
-    /// Messages are deduplicated by compound key (source+target+origin+content_hash):
-    /// the same content from the same source to the same target with the same origin
-    /// is rejected within the dedup window. Returns `true` if the message was delivered
-    /// (or would have been delivered to a subscriber), `false` if it was deduplicated.
-    pub fn publish(&mut self, msg: Message) -> bool {
+    /// `msg.target_node_id`. The return value distinguishes successful delivery
+    /// from no-subscriber, deduplication, and closed/full subscriber cases.
+    pub fn publish(&mut self, msg: Message) -> PublishResult {
         self.clean_expired();
 
         let dedup_key = self.dedup_key(&msg);
         if self.is_duplicate(&dedup_key) {
-            return false;
+            return PublishResult::Deduplicated;
         }
 
-        self.record_hash(&dedup_key);
+        let target = msg.target_node_id.clone();
+        let Some(tx) = self.subscribers.get(&target) else {
+            self.record_hash(&dedup_key);
+            return PublishResult::NoSubscriber;
+        };
 
-        if let Some(tx) = self.subscribers.get(&msg.target_node_id) {
-            let target = msg.target_node_id.clone();
-            if tx.try_send(msg).is_err() {
+        match tx.try_send(msg) {
+            Ok(()) => {
+                self.record_hash(&dedup_key);
+                PublishResult::Delivered
+            }
+            Err(_) => {
                 self.subscribers.remove(&target);
+                PublishResult::SubscriberClosed
             }
         }
-
-        true
     }
 
     // --- Private helpers ---
@@ -127,7 +151,11 @@ mod tests {
 
         let msg = make_message("b", "hello from a");
         let result = bus.publish(msg);
-        assert!(result, "publish should return true for valid subscriber");
+        assert_eq!(
+            result,
+            PublishResult::Delivered,
+            "publish should report delivery for valid subscriber"
+        );
 
         let received = rx.recv().await.expect("should receive message");
         assert_eq!(received.content, "hello from a");
@@ -141,24 +169,39 @@ mod tests {
 
         let msg1 = make_message("b", "duplicate content");
         let hash = msg1.content_hash.clone();
-        assert!(bus.publish(msg1), "first publish should succeed");
+        assert_eq!(
+            bus.publish(msg1),
+            PublishResult::Delivered,
+            "first publish should succeed"
+        );
 
         rx.recv().await.expect("should receive first message");
 
         let msg2 = make_message("b", "duplicate content");
         assert_eq!(msg2.content_hash, hash, "hashes should match");
-        assert!(
-            !bus.publish(msg2),
+        assert_eq!(
+            bus.publish(msg2),
+            PublishResult::Deduplicated,
             "second publish with same hash should be rejected"
         );
     }
 
     #[tokio::test]
-    async fn no_subscriber_no_panic() {
+    async fn no_subscriber_is_reported() {
         let mut bus = MessageBus::new();
 
         let msg = make_message("nonexistent", "orphan message");
         let result = bus.publish(msg);
-        assert!(result, "publish with no subscriber should return true");
+        assert_eq!(result, PublishResult::NoSubscriber);
+    }
+
+    #[tokio::test]
+    async fn closed_subscriber_is_reported() {
+        let mut bus = MessageBus::new();
+        let rx = bus.subscribe("b");
+        drop(rx);
+
+        let result = bus.publish(make_message("b", "closed target"));
+        assert_eq!(result, PublishResult::SubscriberClosed);
     }
 }
