@@ -86,6 +86,8 @@ pub enum GlobalAction {
     FocusNext,
     /// Move focus to the previous pane.
     FocusPrev,
+    /// Pause or resume automatic relay delivery.
+    TogglePause,
     /// Scroll the focused pane upward through scrollback.
     ScrollUp,
     /// Scroll the focused pane downward toward the live screen.
@@ -93,8 +95,8 @@ pub enum GlobalAction {
 }
 
 /// Classify a key press at the runtime level. Ctrl-Q quits, Ctrl-W cycles
-/// focus forward, Ctrl-W with Shift cycles backward. Everything else is
-/// forwarded.
+/// focus forward, Ctrl-W with Shift cycles backward, Ctrl-P toggles relay
+/// pause. Everything else is forwarded.
 pub fn classify_key(key: KeyEvent) -> GlobalAction {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -107,6 +109,7 @@ pub fn classify_key(key: KeyEvent) -> GlobalAction {
                 GlobalAction::FocusNext
             }
         }
+        KeyCode::Char('p') | KeyCode::Char('P') if ctrl => GlobalAction::TogglePause,
         KeyCode::PageUp => GlobalAction::ScrollUp,
         KeyCode::PageDown => GlobalAction::ScrollDown,
         _ => GlobalAction::Forward,
@@ -140,6 +143,14 @@ mod tests {
         assert_eq!(
             classify_key(key(KeyCode::Char('w'), KeyModifiers::CONTROL)),
             GlobalAction::FocusNext
+        );
+    }
+
+    #[test]
+    fn ctrl_p_toggles_pause() {
+        assert_eq!(
+            classify_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL)),
+            GlobalAction::TogglePause
         );
     }
 

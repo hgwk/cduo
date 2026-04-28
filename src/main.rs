@@ -23,6 +23,7 @@ async fn main() {
     match args.command.unwrap_or(Commands::Start {
         agent: cli::Agent::Claude,
         peer_agent: None,
+        split: cli::SplitLayout::Columns,
         yolo: false,
         full_access: false,
         new_session: false,
@@ -30,6 +31,7 @@ async fn main() {
         Commands::Start {
             agent,
             peer_agent,
+            split,
             yolo,
             full_access,
             new_session,
@@ -37,6 +39,7 @@ async fn main() {
             run_native_or_exit(
                 agent,
                 peer_agent.unwrap_or(agent),
+                split,
                 yolo,
                 full_access,
                 new_session,
@@ -45,6 +48,7 @@ async fn main() {
         }
         Commands::Claude {
             peer_agent,
+            split,
             yolo,
             full_access,
             new_session,
@@ -52,6 +56,7 @@ async fn main() {
             run_native_or_exit(
                 cli::Agent::Claude,
                 peer_agent.unwrap_or(cli::Agent::Claude),
+                split,
                 yolo,
                 full_access,
                 new_session,
@@ -60,6 +65,7 @@ async fn main() {
         }
         Commands::Codex {
             peer_agent,
+            split,
             yolo,
             full_access,
             new_session,
@@ -67,6 +73,7 @@ async fn main() {
             run_native_or_exit(
                 cli::Agent::Codex,
                 peer_agent.unwrap_or(cli::Agent::Codex),
+                split,
                 yolo,
                 full_access,
                 new_session,
@@ -116,6 +123,7 @@ async fn main() {
 async fn run_native_or_exit(
     agent_a: cli::Agent,
     agent_b: cli::Agent,
+    split: cli::SplitLayout,
     yolo: bool,
     full_access: bool,
     new_session: bool,
@@ -123,6 +131,7 @@ async fn run_native_or_exit(
     let opts = native::runtime::RuntimeOptions {
         agent_a,
         agent_b,
+        split,
         yolo,
         full_access,
         new_session,

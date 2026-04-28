@@ -88,7 +88,7 @@ cduo start claude codex
 - `cduo init`은 Claude 프로젝트 컨텍스트가 필요할 때만 쓰면 됩니다
 - Codex는 `cduo init` 없이도 동작합니다
 - native session은 foreground 프로세스입니다. UI를 종료하면 agent들도 종료됩니다
-- `Ctrl-W`로 pane focus를 전환하고 `Ctrl-Q`로 종료합니다
+- `Ctrl-W`로 pane focus를 전환하고, `Ctrl-P`로 relay 전달을 일시중지/재개하며, `Ctrl-Q`로 종료합니다
 
 ## 일상 사용 흐름
 
@@ -103,6 +103,7 @@ native UI 조작:
 
 - `Ctrl-W`: pane focus 전환
 - `Ctrl-Shift-W`: 반대 방향으로 pane focus 전환
+- `Ctrl-P`: 자동 relay 전달 일시중지/재개
 - `Ctrl-Q`: native UI 종료 및 두 agent 중지
 - `PageUp` / `PageDown`: 현재 focus pane 스크롤
 - 마우스 휠: 커서 아래 pane 스크롤
@@ -114,9 +115,9 @@ native UI 조작:
 | --- | --- |
 | `cduo` | Claude 기본값으로 native split UI 시작 |
 | `cduo help` 또는 `cduo --help` | 명령 도움말 표시 |
-| `cduo start [claude\|codex] [claude\|codex] [--yolo\|--full-access] [--new]` | native split UI를 시작하며, 두 번째 agent는 pane B를 선택 |
-| `cduo claude [--yolo\|--full-access] [--new]` | Claude/Claude native pair 시작 |
-| `cduo codex [--yolo\|--full-access] [--new]` | Codex/Codex native pair 시작 |
+| `cduo start [claude\|codex] [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | native split UI를 시작하며, 두 번째 agent는 pane B를 선택 |
+| `cduo claude [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | pane A를 Claude로 시작 |
+| `cduo codex [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | pane A를 Codex로 시작 |
 | `cduo doctor` | 머신 설정과 현재 프로젝트 준비 상태 점검 |
 | `cduo status [--verbose]` | native foreground-session 동작 안내 |
 | `cduo init` | Claude `Stop` hook을 보장하고 `CLAUDE.md`에 orchestration 내용을 생성하거나 앞에 추가 |
@@ -142,6 +143,9 @@ cduo update
 cduo start
 cduo start codex
 cduo start claude codex
+cduo claude codex
+cduo codex claude
+cduo codex claude --split rows
 cduo start --new claude codex
 cduo claude --yolo
 cduo codex --yolo

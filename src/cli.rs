@@ -19,6 +19,9 @@ pub enum Commands {
         #[arg(value_enum)]
         peer_agent: Option<Agent>,
 
+        #[arg(long, value_enum, default_value = "columns")]
+        split: SplitLayout,
+
         #[arg(long, default_value_t = false)]
         yolo: bool,
 
@@ -34,6 +37,9 @@ pub enum Commands {
         #[arg(value_enum)]
         peer_agent: Option<Agent>,
 
+        #[arg(long, value_enum, default_value = "columns")]
+        split: SplitLayout,
+
         #[arg(long, default_value_t = false)]
         yolo: bool,
 
@@ -48,6 +54,9 @@ pub enum Commands {
     Codex {
         #[arg(value_enum)]
         peer_agent: Option<Agent>,
+
+        #[arg(long, value_enum, default_value = "columns")]
+        split: SplitLayout,
 
         #[arg(long, default_value_t = false)]
         yolo: bool,
@@ -94,6 +103,13 @@ pub enum Agent {
     Codex,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum SplitLayout {
+    #[default]
+    Columns,
+    Rows,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +125,18 @@ mod tests {
             } => {
                 assert_eq!(agent, Agent::Claude);
                 assert_eq!(peer_agent, Some(Agent::Codex));
+            }
+            _ => panic!("expected start command"),
+        }
+    }
+
+    #[test]
+    fn parses_split_layout() {
+        let cli = Cli::parse_from(["cduo", "start", "codex", "claude", "--split", "rows"]);
+
+        match cli.command.unwrap() {
+            Commands::Start { split, .. } => {
+                assert_eq!(split, SplitLayout::Rows);
             }
             _ => panic!("expected start command"),
         }

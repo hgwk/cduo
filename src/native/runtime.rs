@@ -3,7 +3,7 @@
 //! hook HTTP server, and drives the in-process relay loop. The runtime
 //! process is the cduo session — there is no background daemon.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -24,7 +24,7 @@ use ratatui::Terminal;
 
 use tokio::sync::{broadcast, mpsc};
 
-use crate::cli::Agent;
+use crate::cli::{Agent, SplitLayout};
 use crate::hook::{self, HookEvent};
 use crate::native::input::{classify_key, key_to_bytes, GlobalAction};
 use crate::native::pane::{Focus, Pane, PaneId};
@@ -64,6 +64,7 @@ impl MouseSelection {
 pub struct RuntimeOptions {
     pub agent_a: Agent,
     pub agent_b: Agent,
+    pub split: SplitLayout,
     pub yolo: bool,
     pub full_access: bool,
     /// Reserved for future "always create a new session" semantics; native
@@ -212,7 +213,7 @@ fn ui_loop(
     terminal.hide_cursor()?;
 
     let initial = terminal.size()?;
-    let (pane_cols, pane_rows) = pane_pty_size(initial.width, initial.height);
+    let (pane_cols, pane_rows) = pane_pty_size(initial.width, initial.height, opts.split);
     let port_str = hook_port.to_string();
     let mode = AccessMode::from_flags(opts.yolo, opts.full_access)?;
 
@@ -246,13 +247,15 @@ fn ui_loop(
     let mut last_frame = Instant::now() - Duration::from_secs(1);
     let mut dirty = true;
     let mut footer_msg = format!(
-        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · drag: copy pane text  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
+        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · Ctrl-P: pause relay  · drag: copy pane text  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
         agent_program(opts.agent_a),
         agent_program(opts.agent_b),
         hook_port,
     );
     let default_footer_msg = footer_msg.clone();
     let mut selection: Option<MouseSelection> = None;
+    let mut relay_paused = false;
+    let mut paused_writes: VecDeque<(String, Vec<u8>)> = VecDeque::new();
 
     // Per-pane buffer that mirrors what we forwarded to the agent. On every
     // \r/\n we flush it as a (pane_id, line) submission for the relay's codex
@@ -260,17 +263,24 @@ fn ui_loop(
     let mut input_buf: HashMap<PaneId, Vec<u8>> = HashMap::new();
 
     'main: loop {
+        if !relay_paused {
+            while let Some((target, bytes)) = paused_writes.pop_front() {
+                write_to_target(&mut panes, &target, &bytes);
+            }
+        }
+
         // Drain any pending relay writes (bracketed-paste bundles + Enter)
         // and forward them to the right pane's PTY.
         loop {
             match write_rx.try_recv() {
                 Ok((target, bytes)) => {
-                    let idx = match target.as_str() {
-                        "a" => 0,
-                        "b" => 1,
-                        _ => continue,
-                    };
-                    let _ = panes[idx].write(&bytes);
+                    if relay_paused {
+                        paused_writes.push_back((target, bytes));
+                        footer_msg = pause_footer(paused_writes.len());
+                        dirty = true;
+                    } else {
+                        write_to_target(&mut panes, &target, &bytes);
+                    }
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
@@ -289,7 +299,7 @@ fn ui_loop(
 
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
             terminal.draw(|frame| {
-                draw(frame, &panes, focus, &footer_msg, selection);
+                draw(frame, &panes, focus, &footer_msg, selection, opts.split);
             })?;
             last_frame = Instant::now();
             dirty = false;
@@ -311,6 +321,15 @@ fn ui_loop(
                             focus = focus.prev();
                             dirty = true;
                         }
+                        GlobalAction::TogglePause => {
+                            relay_paused = !relay_paused;
+                            footer_msg = if relay_paused {
+                                pause_footer(paused_writes.len())
+                            } else {
+                                default_footer_msg.clone()
+                            };
+                            dirty = true;
+                        }
                         GlobalAction::ScrollUp => {
                             panes[focus_index(focus)].scroll_up(SCROLL_LINES);
                             dirty = true;
@@ -329,7 +348,7 @@ fn ui_loop(
                     }
                 }
                 Event::Resize(cols, rows) => {
-                    let (pane_cols, pane_rows) = pane_pty_size(cols, rows);
+                    let (pane_cols, pane_rows) = pane_pty_size(cols, rows, opts.split);
                     for pane in panes.iter_mut() {
                         pane.resize(pane_cols, pane_rows);
                     }
@@ -338,7 +357,7 @@ fn ui_loop(
                 Event::Mouse(mouse) => {
                     let size = terminal.size()?;
                     let area = Rect::new(0, 0, size.width, size.height);
-                    let layouts = pane_layouts(area);
+                    let (layouts, _) = pane_layouts(area, opts.split);
                     match mouse.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
                             if let Some((pane, row, col)) =
@@ -427,6 +446,19 @@ fn focus_index(focus: Focus) -> usize {
     pane_id_index(focus.0)
 }
 
+fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) {
+    let idx = match target {
+        "a" => 0,
+        "b" => 1,
+        _ => return,
+    };
+    let _ = panes[idx].write(bytes);
+}
+
+fn pause_footer(queued_writes: usize) -> String {
+    format!(" relay paused · queued writes: {queued_writes} · Ctrl-P: resume ")
+}
+
 fn pane_id_index(id: PaneId) -> usize {
     match id {
         PaneId::A => 0,
@@ -434,22 +466,39 @@ fn pane_id_index(id: PaneId) -> usize {
     }
 }
 
-fn pane_layouts(area: Rect) -> [PaneLayout; 2] {
+fn pane_layouts(area: Rect, split: SplitLayout) -> ([PaneLayout; 2], Rect) {
     let body = Rect::new(
         area.x,
         area.y + 1,
         area.width,
         area.height.saturating_sub(2),
     );
-    let half = body.width / 2;
-    let pane_a = Rect::new(body.x, body.y, half, body.height);
-    let pane_b = Rect::new(
-        body.x + half + 1,
-        body.y,
-        body.width.saturating_sub(half + 1),
-        body.height,
-    );
-    [PaneLayout { outer: pane_a }, PaneLayout { outer: pane_b }]
+    match split {
+        SplitLayout::Columns => {
+            let half = body.width / 2;
+            let pane_a = Rect::new(body.x, body.y, half, body.height);
+            let divider = Rect::new(body.x + half, body.y, 1, body.height);
+            let pane_b = Rect::new(
+                body.x + half + 1,
+                body.y,
+                body.width.saturating_sub(half + 1),
+                body.height,
+            );
+            ([PaneLayout { outer: pane_a }, PaneLayout { outer: pane_b }], divider)
+        }
+        SplitLayout::Rows => {
+            let half = body.height / 2;
+            let pane_a = Rect::new(body.x, body.y, body.width, half);
+            let divider = Rect::new(body.x, body.y + half, body.width, 1);
+            let pane_b = Rect::new(
+                body.x,
+                body.y + half + 1,
+                body.width,
+                body.height.saturating_sub(half + 1),
+            );
+            ([PaneLayout { outer: pane_a }, PaneLayout { outer: pane_b }], divider)
+        }
+    }
 }
 
 fn pane_inner(area: Rect) -> Rect {
@@ -555,6 +604,7 @@ fn draw(
     focus: Focus,
     footer_msg: &str,
     selection: Option<MouseSelection>,
+    split: SplitLayout,
 ) {
     let area = frame.area();
     if area.width < 4 || area.height < 4 {
@@ -564,17 +614,7 @@ fn draw(
 
     let header_area = Rect::new(area.x, area.y, area.width, 1);
     let footer_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
-
-    let half = body.width / 2;
-    let pane_a_area = Rect::new(body.x, body.y, half, body.height);
-    let divider_area = Rect::new(body.x + half, body.y, 1, body.height);
-    let pane_b_area = Rect::new(
-        body.x + half + 1,
-        body.y,
-        body.width.saturating_sub(half + 1),
-        body.height,
-    );
+    let (layouts, divider_area) = pane_layouts(area, split);
 
     frame.render_widget(
         Paragraph::new(format!(
@@ -588,17 +628,17 @@ fn draw(
     render_pane(
         frame,
         &panes[0],
-        pane_a_area,
+        layouts[0].outer,
         focus.0 == PaneId::A,
         selection
             .filter(|selection| selection.pane == PaneId::A)
             .map(MouseSelection::range),
     );
-    render_divider(frame, divider_area);
+    render_divider(frame, divider_area, split);
     render_pane(
         frame,
         &panes[1],
-        pane_b_area,
+        layouts[1].outer,
         focus.0 == PaneId::B,
         selection
             .filter(|selection| selection.pane == PaneId::B)
@@ -659,9 +699,13 @@ fn render_pane(
     }
 }
 
-fn render_divider(frame: &mut ratatui::Frame, area: Rect) {
+fn render_divider(frame: &mut ratatui::Frame, area: Rect, split: SplitLayout) {
+    let borders = match split {
+        SplitLayout::Columns => Borders::LEFT,
+        SplitLayout::Rows => Borders::TOP,
+    };
     let block = Block::default()
-        .borders(Borders::LEFT)
+        .borders(borders)
         .border_style(Style::default().fg(Color::DarkGray));
     frame.render_widget(block, area);
 }

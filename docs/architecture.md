@@ -23,7 +23,7 @@ The UI thread owns the PTY writers. The relay task communicates with the UI via 
 
 - `hook_rx` — Claude `Stop` hook events arrive here.
 - `input_tx` — UI forwards each completed (pane, line) submission to the relay so codex rollouts can be matched to the owning pane.
-- `write_tx` — Relay sends `(target_pane, bytes)` tuples; the UI loop drains them and writes to the target PTY (bracketed-paste body, then a delayed `\r`).
+- `write_tx` — Relay sends `(target_pane, bytes)` tuples; the UI loop drains them and writes to the target PTY (bracketed-paste body, then a delayed `\r`). If relay delivery is paused with `Ctrl-P`, the UI queues these writes and flushes them in order when resumed.
 
 Session logs are written under the platform state directory:
 
@@ -54,7 +54,7 @@ commands do not edit project files.
 - `src/cli.rs`: clap definitions for `start` / `claude` / `codex` / `status` / etc.
 - `src/native/runtime.rs`: ratatui UI loop, PTY ownership, raw-mode/alt-screen guard, hook server bootstrap, channel wiring.
 - `src/native/pane.rs`: per-pane PTY spawn + reader thread + vt100 parser.
-- `src/native/input.rs`: crossterm `KeyEvent` → PTY bytes; global Ctrl-Q / Ctrl-W classification.
+- `src/native/input.rs`: crossterm `KeyEvent` → PTY bytes; global Ctrl-Q / Ctrl-W / Ctrl-P classification.
 - `src/native/ui.rs`: vt100 `Screen` → ratatui `Buffer` rendering with color/attribute mapping.
 - `src/native/relay.rs`: `tokio::select!` loop over hook / input / 250 ms tick; pane↔transcript binding; bracketed-paste delivery.
 - `src/relay_core.rs`: pure helpers shared by the relay loop — transcript parsing, codex rollout discovery, dedup, structured logging.

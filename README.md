@@ -90,6 +90,7 @@ Native UI controls:
 
 - `Ctrl-W`: switch focus between panes
 - `Ctrl-Shift-W`: switch focus in the opposite direction
+- `Ctrl-P`: pause or resume automatic relay delivery
 - `Ctrl-Q`: quit the native UI and stop both agents
 - `PageUp` / `PageDown`: scroll the focused pane
 - Mouse wheel: scroll the pane under the cursor
@@ -101,9 +102,9 @@ Native UI controls:
 | --- | --- |
 | `cduo` | Start the native split UI with Claude defaults |
 | `cduo help` or `cduo --help` | Show command help |
-| `cduo start [claude\|codex] [claude\|codex] [--yolo\|--full-access] [--new]` | Start the native split UI; optional second agent selects pane B |
-| `cduo claude [--yolo\|--full-access] [--new]` | Start a native Claude/Claude pair |
-| `cduo codex [--yolo\|--full-access] [--new]` | Start a native Codex/Codex pair |
+| `cduo start [claude\|codex] [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | Start the native split UI; optional second agent selects pane B |
+| `cduo claude [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | Start a native pair with Claude in pane A |
+| `cduo codex [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | Start a native pair with Codex in pane A |
 | `cduo doctor` | Check machine setup and current project readiness |
 | `cduo status [--verbose]` | Report native foreground-session behavior |
 | `cduo init` | Ensure the Claude `Stop` hook and create or prepend orchestration content in `CLAUDE.md` |
@@ -129,6 +130,9 @@ cduo update
 cduo start
 cduo start codex
 cduo start claude codex
+cduo claude codex
+cduo codex claude
+cduo codex claude --split rows
 cduo start --new claude codex
 cduo claude --yolo
 cduo codex --yolo

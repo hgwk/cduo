@@ -3,6 +3,8 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
+use crate::cli::SplitLayout;
+
 use vt100::Color as VtColor;
 
 /// Renders a vt100 screen into a ratatui buffer cell-by-cell, preserving
@@ -123,12 +125,24 @@ fn vt_color_to_rat(color: VtColor) -> Color {
 /// Compute the per-pane PTY size given the full terminal frame size and a
 /// 2-pane horizontal split. We reserve 1 row for header + 1 row for footer,
 /// and split the remaining width in half (with a 1-column divider).
-pub fn pane_pty_size(frame_cols: u16, frame_rows: u16) -> (u16, u16) {
-    let inner_rows = frame_rows.saturating_sub(2).max(5);
-    // 1-column divider between panes; the right pane absorbs any odd column.
-    let usable_cols = frame_cols.saturating_sub(1);
-    let pane_cols = (usable_cols / 2).max(20);
-    (pane_cols, inner_rows)
+pub fn pane_pty_size(frame_cols: u16, frame_rows: u16, split: SplitLayout) -> (u16, u16) {
+    let body_cols = frame_cols;
+    let body_rows = frame_rows.saturating_sub(2);
+
+    match split {
+        SplitLayout::Columns => {
+            let outer_cols = body_cols / 2;
+            let inner_cols = outer_cols.saturating_sub(2).max(1);
+            let inner_rows = body_rows.saturating_sub(2).max(1);
+            (inner_cols, inner_rows)
+        }
+        SplitLayout::Rows => {
+            let outer_rows = body_rows / 2;
+            let inner_cols = body_cols.saturating_sub(2).max(1);
+            let inner_rows = outer_rows.saturating_sub(2).max(1);
+            (inner_cols, inner_rows)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -137,15 +151,22 @@ mod tests {
 
     #[test]
     fn pane_pty_size_basic() {
-        let (cols, rows) = pane_pty_size(200, 50);
-        assert_eq!(cols, 99);
-        assert_eq!(rows, 48);
+        let (cols, rows) = pane_pty_size(200, 50, SplitLayout::Columns);
+        assert_eq!(cols, 98);
+        assert_eq!(rows, 46);
+    }
+
+    #[test]
+    fn pane_pty_size_rows() {
+        let (cols, rows) = pane_pty_size(200, 50, SplitLayout::Rows);
+        assert_eq!(cols, 198);
+        assert_eq!(rows, 22);
     }
 
     #[test]
     fn pane_pty_size_minimum_clamps() {
-        let (cols, rows) = pane_pty_size(10, 4);
-        assert!(cols >= 20);
-        assert!(rows >= 5);
+        let (cols, rows) = pane_pty_size(1, 1, SplitLayout::Columns);
+        assert!(cols >= 1);
+        assert!(rows >= 1);
     }
 }
