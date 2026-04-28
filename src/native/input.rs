@@ -88,6 +88,8 @@ pub enum GlobalAction {
     FocusPrev,
     /// Pause or resume automatic relay delivery.
     TogglePause,
+    /// Toggle the pane split layout between columns and rows.
+    ToggleSplit,
     /// Scroll the focused pane upward through scrollback.
     ScrollUp,
     /// Scroll the focused pane downward toward the live screen.
@@ -96,7 +98,7 @@ pub enum GlobalAction {
 
 /// Classify a key press at the runtime level. Ctrl-Q quits, Ctrl-W cycles
 /// focus forward, Ctrl-W with Shift cycles backward, Ctrl-P toggles relay
-/// pause. Everything else is forwarded.
+/// pause, Ctrl-L toggles split layout. Everything else is forwarded.
 pub fn classify_key(key: KeyEvent) -> GlobalAction {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -110,6 +112,7 @@ pub fn classify_key(key: KeyEvent) -> GlobalAction {
             }
         }
         KeyCode::Char('p') | KeyCode::Char('P') if ctrl => GlobalAction::TogglePause,
+        KeyCode::Char('l') | KeyCode::Char('L') if ctrl => GlobalAction::ToggleSplit,
         KeyCode::PageUp => GlobalAction::ScrollUp,
         KeyCode::PageDown => GlobalAction::ScrollDown,
         _ => GlobalAction::Forward,
@@ -151,6 +154,14 @@ mod tests {
         assert_eq!(
             classify_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL)),
             GlobalAction::TogglePause
+        );
+    }
+
+    #[test]
+    fn ctrl_l_toggles_split() {
+        assert_eq!(
+            classify_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            GlobalAction::ToggleSplit
         );
     }
 

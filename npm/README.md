@@ -20,8 +20,8 @@ cduo start claude codex
 ```
 
 Native UI controls: `Ctrl-W` switches panes, `Ctrl-P` pauses/resumes relay
-delivery, `Ctrl-Q` quits, `PageUp/PageDown` scroll the focused pane, and mouse
-drag copies text from one pane via OSC52.
+delivery, `Ctrl-L` toggles split layout, `Ctrl-Q` quits, `PageUp/PageDown`
+scroll the focused pane, and mouse drag copies text from one pane via OSC52.
 
 Full documentation is available in the project repository:
 

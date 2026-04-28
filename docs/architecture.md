@@ -54,7 +54,7 @@ commands do not edit project files.
 - `src/cli.rs`: clap definitions for `start` / `claude` / `codex` / `status` / etc.
 - `src/native/runtime.rs`: ratatui UI loop, PTY ownership, raw-mode/alt-screen guard, hook server bootstrap, channel wiring.
 - `src/native/pane.rs`: per-pane PTY spawn + reader thread + vt100 parser.
-- `src/native/input.rs`: crossterm `KeyEvent` → PTY bytes; global Ctrl-Q / Ctrl-W / Ctrl-P classification.
+- `src/native/input.rs`: crossterm `KeyEvent` → PTY bytes; global Ctrl-Q / Ctrl-W / Ctrl-P / Ctrl-L classification.
 - `src/native/ui.rs`: vt100 `Screen` → ratatui `Buffer` rendering with color/attribute mapping.
 - `src/native/relay.rs`: `tokio::select!` loop over hook / input / 250 ms tick; pane↔transcript binding; bracketed-paste delivery.
 - `src/relay_core.rs`: pure helpers shared by the relay loop — transcript parsing, codex rollout discovery, dedup, structured logging.

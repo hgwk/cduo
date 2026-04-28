@@ -88,7 +88,7 @@ cduo start claude codex
 - `cduo init`은 Claude 프로젝트 컨텍스트가 필요할 때만 쓰면 됩니다
 - Codex는 `cduo init` 없이도 동작합니다
 - native session은 foreground 프로세스입니다. UI를 종료하면 agent들도 종료됩니다
-- `Ctrl-W`로 pane focus를 전환하고, `Ctrl-P`로 relay 전달을 일시중지/재개하며, `Ctrl-Q`로 종료합니다
+- `Ctrl-W`로 pane focus를 전환하고, `Ctrl-P`로 relay 전달을 일시중지/재개하며, `Ctrl-L`로 split 방향을 바꾸고, `Ctrl-Q`로 종료합니다
 
 ## 일상 사용 흐름
 
@@ -104,6 +104,7 @@ native UI 조작:
 - `Ctrl-W`: pane focus 전환
 - `Ctrl-Shift-W`: 반대 방향으로 pane focus 전환
 - `Ctrl-P`: 자동 relay 전달 일시중지/재개
+- `Ctrl-L`: 좌우/상하 split 전환
 - `Ctrl-Q`: native UI 종료 및 두 agent 중지
 - `PageUp` / `PageDown`: 현재 focus pane 스크롤
 - 마우스 휠: 커서 아래 pane 스크롤

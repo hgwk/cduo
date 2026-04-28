@@ -216,6 +216,7 @@ fn ui_loop(
     let (pane_cols, pane_rows) = pane_pty_size(initial.width, initial.height, opts.split);
     let port_str = hook_port.to_string();
     let mode = AccessMode::from_flags(opts.yolo, opts.full_access)?;
+    let mut split = opts.split;
 
     let pane_a = Pane::spawn(
         PaneId::A,
@@ -247,7 +248,7 @@ fn ui_loop(
     let mut last_frame = Instant::now() - Duration::from_secs(1);
     let mut dirty = true;
     let mut footer_msg = format!(
-        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · Ctrl-P: pause relay  · drag: copy pane text  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
+        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy pane text  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
         agent_program(opts.agent_a),
         agent_program(opts.agent_b),
         hook_port,
@@ -299,7 +300,7 @@ fn ui_loop(
 
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
             terminal.draw(|frame| {
-                draw(frame, &panes, focus, &footer_msg, selection, opts.split);
+                draw(frame, &panes, focus, &footer_msg, selection, split);
             })?;
             last_frame = Instant::now();
             dirty = false;
@@ -330,6 +331,16 @@ fn ui_loop(
                             };
                             dirty = true;
                         }
+                        GlobalAction::ToggleSplit => {
+                            split = toggle_split(split);
+                            let size = terminal.size()?;
+                            resize_panes(&mut panes, size.width, size.height, split);
+                            footer_msg = format!(
+                                " split: {} · Ctrl-L: toggle split ",
+                                split_label(split)
+                            );
+                            dirty = true;
+                        }
                         GlobalAction::ScrollUp => {
                             panes[focus_index(focus)].scroll_up(SCROLL_LINES);
                             dirty = true;
@@ -348,16 +359,13 @@ fn ui_loop(
                     }
                 }
                 Event::Resize(cols, rows) => {
-                    let (pane_cols, pane_rows) = pane_pty_size(cols, rows, opts.split);
-                    for pane in panes.iter_mut() {
-                        pane.resize(pane_cols, pane_rows);
-                    }
+                    resize_panes(&mut panes, cols, rows, split);
                     dirty = true;
                 }
                 Event::Mouse(mouse) => {
                     let size = terminal.size()?;
                     let area = Rect::new(0, 0, size.width, size.height);
-                    let (layouts, _) = pane_layouts(area, opts.split);
+                    let (layouts, _) = pane_layouts(area, split);
                     match mouse.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
                             if let Some((pane, row, col)) =
@@ -444,6 +452,27 @@ fn ui_loop(
 
 fn focus_index(focus: Focus) -> usize {
     pane_id_index(focus.0)
+}
+
+fn resize_panes(panes: &mut [Pane; 2], cols: u16, rows: u16, split: SplitLayout) {
+    let (pane_cols, pane_rows) = pane_pty_size(cols, rows, split);
+    for pane in panes.iter_mut() {
+        pane.resize(pane_cols, pane_rows);
+    }
+}
+
+fn toggle_split(split: SplitLayout) -> SplitLayout {
+    match split {
+        SplitLayout::Columns => SplitLayout::Rows,
+        SplitLayout::Rows => SplitLayout::Columns,
+    }
+}
+
+fn split_label(split: SplitLayout) -> &'static str {
+    match split {
+        SplitLayout::Columns => "columns",
+        SplitLayout::Rows => "rows",
+    }
 }
 
 fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) {
@@ -856,5 +885,13 @@ mod tests {
                 ("a".to_string(), "alpha".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn toggle_split_switches_layouts() {
+        assert_eq!(toggle_split(SplitLayout::Columns), SplitLayout::Rows);
+        assert_eq!(toggle_split(SplitLayout::Rows), SplitLayout::Columns);
+        assert_eq!(split_label(SplitLayout::Columns), "columns");
+        assert_eq!(split_label(SplitLayout::Rows), "rows");
     }
 }

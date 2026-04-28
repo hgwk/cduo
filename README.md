@@ -91,6 +91,7 @@ Native UI controls:
 - `Ctrl-W`: switch focus between panes
 - `Ctrl-Shift-W`: switch focus in the opposite direction
 - `Ctrl-P`: pause or resume automatic relay delivery
+- `Ctrl-L`: toggle split layout between columns and rows
 - `Ctrl-Q`: quit the native UI and stop both agents
 - `PageUp` / `PageDown`: scroll the focused pane
 - Mouse wheel: scroll the pane under the cursor
