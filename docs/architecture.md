@@ -44,16 +44,23 @@ Runtime controls stay local to the foreground UI:
 `CDUO_RELAY_PREFIX` prepends a short instruction to relayed messages before
 they are published or manually sent.
 `CDUO_MAX_RELAY_TURNS` stops automatic relay after N publishes, and
-`CDUO_STOP_RELAY` or `[CDUO_STOP]` in an agent answer stops automatic relay.
+an agent answer that is exactly `~~~` stops automatic relay. `CDUO_STOP_TOKEN`
+can change that exact stop token. Legacy `CDUO_STOP_RELAY` or `[CDUO_STOP]`
+markers in an agent answer also stop automatic relay.
 
 ## Relay Sources
 
 - Claude: `Stop` hook posts `terminal_id` and `transcript_path` to the local hook server.
-- Codex: the relay discovers recent Codex rollout JSONL files under `~/.codex/sessions/` whose `session_meta.payload.cwd` matches the workspace and whose user prompts match a pending submission from that pane.
+- Codex: the relay discovers Codex rollout JSONL files under `~/.codex/sessions/` whose `session_meta.payload.cwd` matches the workspace and whose user prompts match a pending submission from that pane. Resumed sessions are accepted when the rollout file was modified after `cduo` started.
 - PTY output is rendered for the user but is **not** parsed as message content; transcripts are the only source of relay text.
 
-`cduo init` installs the Claude `Stop` hook into the project. Native `start`
-commands do not edit project files.
+`cduo init` installs the Claude `Stop` hook into the project and writes the
+orchestration instructions in RTK-style referenced form: `CLAUDE.md` contains
+`@.cduo/orchestration.md`, while the full text lives in
+`.cduo/orchestration.md`. `AGENTS.md` is created with that reference only when
+missing; existing project policy files are left untouched unless they already
+contain cduo content or `--force` is used. Native `start` commands do not edit
+project files.
 
 ## Relay Flow
 

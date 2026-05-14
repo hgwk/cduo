@@ -118,7 +118,9 @@ native UI 조작:
 
 `CDUO_RELAY_PREFIX`를 설정하면 relay 메시지 앞에 짧은 지시문을 자동으로 붙일 수 있습니다.
 `CDUO_MAX_RELAY_TURNS`를 설정하면 자동 relay를 N회 publish 후 멈춥니다.
-agent가 `CDUO_STOP_RELAY`를 출력해도 자동 핑퐁 relay가 멈춥니다.
+agent가 정확히 `~~~`만 반환해도 자동 핑퐁 relay가 멈춥니다. 이 stop token은
+`CDUO_STOP_TOKEN`으로 바꿀 수 있고, 기존 `CDUO_STOP_RELAY`와 `[CDUO_STOP]`
+마커도 계속 동작합니다.
 
 ## 명령어
 
@@ -131,8 +133,8 @@ agent가 `CDUO_STOP_RELAY`를 출력해도 자동 핑퐁 relay가 멈춥니다.
 | `cduo codex [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | pane A를 Codex로 시작 |
 | `cduo doctor` | 머신 설정과 현재 프로젝트 준비 상태 점검 |
 | `cduo status [--verbose]` | native foreground-session 동작 안내 |
-| `cduo init` | Claude `Stop` hook을 보장하고 `CLAUDE.md`에 orchestration 내용을 생성하거나 앞에 추가 |
-| `cduo init --force` | `.claude/settings.local.json`과 `CLAUDE.md`를 덮어씀 |
+| `cduo init` | Claude `Stop` hook을 보장하고 `CLAUDE.md`에 로컬 `@.cduo/orchestration.md` 참조 추가. `AGENTS.md`는 없을 때만 생성 |
+| `cduo init --force` | `.cduo/orchestration.md`, `CLAUDE.md` / `AGENTS.md` 참조, `.claude/settings.local.json` 강제 갱신 |
 | `cduo backup` | 현재 프로젝트의 orchestration 관련 파일 백업 |
 | `cduo update` | 글로벌 CLI를 `npm install -g @hgwk/cduo@latest`로 업데이트 |
 | `cduo version` 또는 `cduo --version` | 설치된 cduo 버전 표시 |
@@ -204,16 +206,19 @@ Codex를 선택하면 `cduo`는 현재 `PATH`의 `codex`가 공식 OpenAI CLI인
 ```text
 your-project/
 ├── .cduo/
-│   └── backups/
+│   ├── backups/
+│   └── orchestration.md
 ├── .claude/
 │   └── settings.local.json
+├── AGENTS.md
 ├── CLAUDE.md
 └── ...
 ```
 
 명령별 동작:
 
-- `cduo init`은 `.claude/settings.local.json`과 `CLAUDE.md`를 함께 관리합니다
+- `cduo init`은 `.claude/settings.local.json`, `.cduo/orchestration.md`, `CLAUDE.md`의 `@.cduo/orchestration.md` 참조를 함께 관리합니다
+- `AGENTS.md`는 없을 때 같은 참조로 생성합니다. 기존 프로젝트 `AGENTS.md`는 이미 cduo 내용이 있거나 `--force`를 쓸 때만 수정합니다
 - `cduo start`, `cduo claude ...`, `cduo codex ...`는 프로젝트 파일을 수정하지 않습니다
 - `cduo backup`은 `.cduo/backups/` 아래에 타임스탬프 백업을 저장합니다
 
@@ -223,7 +228,7 @@ your-project/
 2. native runtime이 선택된 agent를 `TERMINAL_ID`와 `ORCHESTRATION_PORT`를 가진 direct PTY 두 개로 실행합니다.
 3. `ratatui` + `vt100`이 두 PTY를 직접 렌더링합니다. tmux fallback은 없습니다.
 4. Claude는 `Stop` hook으로 completion 이벤트와 transcript 경로를 보냅니다.
-5. Codex completion은 현재 workspace의 Codex rollout JSONL에서 읽습니다.
+5. Codex completion은 현재 workspace의 Codex rollout JSONL에서 읽고, 해당 pane에 제출된 prompt와 매칭합니다.
 6. `MessageBus`가 source/target/content 중복 전송을 막고 `PairRouter`가 상대 pane으로 전달합니다.
 7. relay 출력은 target PTY stdin에 직접 쓰고 Enter를 보냅니다. 터미널 UI 출력은 메시지 본문으로 쓰지 않습니다.
 
@@ -259,8 +264,8 @@ cduo uninstall
 
 - `.claude/settings.local.json`에서 Claude `Stop` hook 제거
 - cduo 템플릿과 같은 Claude 기본 권한 설정이 있으면 함께 제거
-- `CLAUDE.md` 앞에 붙은 orchestration 블록 제거
-- 파일이 번들 템플릿만 담고 있으면 `CLAUDE.md` 자체 삭제
+- `CLAUDE.md`와 `AGENTS.md`에서 `@.cduo/orchestration.md` 참조 제거
+- `.cduo/orchestration.md` 제거
 
 설치된 CLI 업데이트:
 

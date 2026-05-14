@@ -72,6 +72,7 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
     let (input_tx, input_rx) = mpsc::channel::<(String, String)>(64);
     let (write_tx, write_rx) = mpsc::channel::<(String, Vec<u8>)>(64);
     let (control_tx, control_rx) = mpsc::channel::<relay::RelayControl>(64);
+    let (status_tx, status_rx) = mpsc::channel::<relay::RelayStatus>(16);
     if let Ok(prefix) = std::env::var("CDUO_RELAY_PREFIX") {
         if !prefix.is_empty() {
             let _ = control_tx.try_send(relay::RelayControl::SetPrefix(Some(prefix)));
@@ -104,14 +105,18 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
         control_rx,
         input_rx,
         write_tx,
+        status_tx: Some(status_tx),
         shutdown_rx: shutdown_tx.subscribe(),
     }));
 
-    let join = tokio::task::spawn_blocking(move || {
-        run_blocking(
-            opts, cwd, hook_port, log_path, input_tx, control_tx, write_rx,
-        )
-    });
+    let channels = RuntimeChannels {
+        input_tx,
+        control_tx,
+        write_rx,
+        status_rx,
+    };
+    let join =
+        tokio::task::spawn_blocking(move || run_blocking(opts, cwd, hook_port, log_path, channels));
     let result = join.await.context("native runtime join")?;
 
     let _ = shutdown_tx.send(());
@@ -153,17 +158,13 @@ fn run_blocking(
     cwd: PathBuf,
     hook_port: u16,
     log_path: PathBuf,
-    input_tx: mpsc::Sender<(String, String)>,
-    control_tx: mpsc::Sender<relay::RelayControl>,
-    write_rx: mpsc::Receiver<(String, Vec<u8>)>,
+    channels: RuntimeChannels,
 ) -> Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
 
-    let result = ui_loop(
-        opts, &cwd, hook_port, &log_path, input_tx, control_tx, write_rx,
-    );
+    let result = ui_loop(opts, &cwd, hook_port, &log_path, channels);
 
     let mut stdout = io::stdout();
     let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
@@ -176,10 +177,14 @@ fn ui_loop(
     cwd: &std::path::Path,
     hook_port: u16,
     log_path: &std::path::Path,
-    input_tx: mpsc::Sender<(String, String)>,
-    control_tx: mpsc::Sender<relay::RelayControl>,
-    mut write_rx: mpsc::Receiver<(String, Vec<u8>)>,
+    channels: RuntimeChannels,
 ) -> Result<()> {
+    let RuntimeChannels {
+        input_tx,
+        control_tx,
+        mut write_rx,
+        mut status_rx,
+    } = channels;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
@@ -231,6 +236,7 @@ fn ui_loop(
     let mut paused_writes: VecDeque<(String, Vec<u8>)> = VecDeque::new();
     let mut a_to_b_enabled = true;
     let mut b_to_a_enabled = true;
+    let mut relay_auto_stopped = false;
     let mut maximized: Option<PaneId> = None;
 
     // Per-pane buffer that mirrors what we forwarded to the agent. On every
@@ -254,6 +260,10 @@ fn ui_loop(
             dirty = true;
         }
 
+        if drain_relay_status(&mut status_rx, &mut relay_auto_stopped) {
+            dirty = true;
+        }
+
         let mut produced = false;
         for pane in panes.iter_mut() {
             if pane.drain_into_parser() {
@@ -265,16 +275,16 @@ fn ui_loop(
         }
 
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
+            let footer = footer_with_relay_status(
+                &footer_msg,
+                relay_paused,
+                paused_writes.len(),
+                a_to_b_enabled,
+                b_to_a_enabled,
+                relay_auto_stopped,
+            );
             terminal.draw(|frame| {
-                draw(
-                    frame,
-                    &panes,
-                    focus,
-                    &footer_msg,
-                    selection,
-                    split,
-                    maximized,
-                );
+                draw(frame, &panes, focus, &footer, selection, split, maximized);
             })?;
             last_frame = Instant::now();
             dirty = false;
@@ -530,6 +540,13 @@ fn ui_loop(
     Ok(())
 }
 
+struct RuntimeChannels {
+    input_tx: mpsc::Sender<(String, String)>,
+    control_tx: mpsc::Sender<relay::RelayControl>,
+    write_rx: mpsc::Receiver<(String, Vec<u8>)>,
+    status_rx: mpsc::Receiver<relay::RelayStatus>,
+}
+
 fn drain_paused_writes(
     panes: &mut [Pane; 2],
     paused_writes: &mut VecDeque<(String, Vec<u8>)>,
@@ -577,6 +594,26 @@ fn drain_relay_writes(
     dirty
 }
 
+fn drain_relay_status(
+    status_rx: &mut mpsc::Receiver<relay::RelayStatus>,
+    relay_auto_stopped: &mut bool,
+) -> bool {
+    let mut dirty = false;
+    loop {
+        match status_rx.try_recv() {
+            Ok(status) => {
+                if *relay_auto_stopped != status.auto_stopped {
+                    *relay_auto_stopped = status.auto_stopped;
+                    dirty = true;
+                }
+            }
+            Err(mpsc::error::TryRecvError::Empty) => break,
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
+        }
+    }
+    dirty
+}
+
 fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) -> Result<()> {
     let idx = match target {
         "a" => 0,
@@ -614,6 +651,29 @@ fn clear_paused_writes(paused_writes: &mut VecDeque<(String, Vec<u8>)>) -> usize
 fn route_footer(route: &str, enabled: bool) -> String {
     let state = if enabled { "on" } else { "off" };
     format!(" relay {route}: {state} · Ctrl-1: A→B · Ctrl-2: B→A ")
+}
+
+fn footer_with_relay_status(
+    message: &str,
+    relay_paused: bool,
+    queued_writes: usize,
+    a_to_b_enabled: bool,
+    b_to_a_enabled: bool,
+    relay_auto_stopped: bool,
+) -> String {
+    let mode = if relay_auto_stopped {
+        "stopped"
+    } else if relay_paused {
+        "paused"
+    } else {
+        "on"
+    };
+    let a_to_b = if a_to_b_enabled { "on" } else { "off" };
+    let b_to_a = if b_to_a_enabled { "on" } else { "off" };
+    format!(
+        " relay:{mode} q:{queued_writes} A→B:{a_to_b} B→A:{b_to_a} │ {}",
+        message.trim()
+    )
 }
 
 fn recent_log_footer(log_path: &std::path::Path) -> String {
@@ -776,5 +836,24 @@ mod tests {
         let footer = write_error_footer("a", &std::io::Error::other("closed"));
         assert!(footer.contains("pane a"));
         assert!(footer.contains("closed"));
+    }
+
+    #[test]
+    fn footer_status_shows_relay_mode_queue_and_routes() {
+        let footer = footer_with_relay_status("ready", true, 3, false, true, false);
+
+        assert!(footer.contains("relay:paused"));
+        assert!(footer.contains("q:3"));
+        assert!(footer.contains("A→B:off"));
+        assert!(footer.contains("B→A:on"));
+        assert!(footer.ends_with("ready"));
+    }
+
+    #[test]
+    fn footer_status_shows_stopped_relay_over_pause_state() {
+        let footer = footer_with_relay_status("ready", true, 3, true, true, true);
+
+        assert!(footer.contains("relay:stopped"));
+        assert!(!footer.contains("relay:paused"));
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "cduo"
-version = "2.0.7"
+version = "2.0.8"
 edition = "2021"
 authors = ["hgwk"]
 description = "Run Claude Code and the OpenAI Codex CLI side by side in a shared workspace"

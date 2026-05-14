@@ -105,7 +105,9 @@ Native UI controls:
 
 Set `CDUO_RELAY_PREFIX` to prepend a short instruction to relayed messages.
 Set `CDUO_MAX_RELAY_TURNS` to stop automatic relay after N publishes, or have
-an agent output `CDUO_STOP_RELAY` to stop the automatic ping-pong.
+an agent return exactly `~~~` to stop the automatic ping-pong. The stop token
+can be changed with `CDUO_STOP_TOKEN`. Legacy `CDUO_STOP_RELAY` and
+`[CDUO_STOP]` markers are still honored.
 
 ## Commands
 
@@ -118,8 +120,8 @@ an agent output `CDUO_STOP_RELAY` to stop the automatic ping-pong.
 | `cduo codex [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | Start a native pair with Codex in pane A |
 | `cduo doctor` | Check machine setup and current project readiness |
 | `cduo status [--verbose]` | Report native foreground-session behavior |
-| `cduo init` | Ensure the Claude `Stop` hook and create or prepend orchestration content in `CLAUDE.md` |
-| `cduo init --force` | Overwrite `CLAUDE.md` and `.claude/settings.local.json` instead of merging |
+| `cduo init` | Ensure the Claude `Stop` hook and add a local `@.cduo/orchestration.md` reference to `CLAUDE.md`; `AGENTS.md` is created only when missing |
+| `cduo init --force` | Refresh `.cduo/orchestration.md`, force `CLAUDE.md` / `AGENTS.md` references, and refresh `.claude/settings.local.json` |
 | `cduo backup` | Back up orchestration-related files in the current project |
 | `cduo update` | Update to the latest version |
 | `cduo version` or `cduo --version` | Show the installed cduo version |
@@ -191,16 +193,19 @@ When Codex is selected, `cduo` checks that `codex` resolves to the official Open
 ```text
 your-project/
 ├── .cduo/
-│   └── backups/
+│   ├── backups/
+│   └── orchestration.md
 ├── .claude/
 │   └── settings.local.json
+├── AGENTS.md
 ├── CLAUDE.md
 └── ...
 ```
 
 Command behavior:
 
-- `cduo init` manages both `.claude/settings.local.json` and `CLAUDE.md`
+- `cduo init` manages `.claude/settings.local.json`, `.cduo/orchestration.md`, and the `@.cduo/orchestration.md` reference in `CLAUDE.md`
+- `AGENTS.md` is created with the same reference when missing; an existing project `AGENTS.md` is left untouched unless it already contains cduo content or `--force` is used
 - `cduo start`, `cduo claude ...`, and `cduo codex ...` do not modify project files
 - `cduo backup` writes timestamped copies into `.cduo/backups/`
 
@@ -210,7 +215,7 @@ Command behavior:
 2. The native runtime launches the selected agents in direct PTYs with `TERMINAL_ID` and `ORCHESTRATION_PORT`.
 3. `ratatui` + `vt100` render the two PTYs directly; there is no tmux fallback.
 4. Claude sends completion events through the `Stop` hook to the embedded hook server.
-5. Codex completions are read from Codex rollout JSONL files for the current workspace.
+5. Codex completions are read from Codex rollout JSONL files for the current workspace, matched to the pane's submitted prompt.
 6. `MessageBus` deduplicates source/target/content deliveries and `PairRouter` forwards each agent response to its counterpart.
 7. Relay output is written directly to the target PTY stdin; terminal UI output is not used as message content.
 
@@ -246,8 +251,8 @@ cduo uninstall
 
 - Removes the Claude `Stop` hook from `.claude/settings.local.json`
 - Removes the bundled Claude permission default if it matches the cduo template
-- Removes the prepended orchestration block from `CLAUDE.md`
-- Deletes `CLAUDE.md` entirely if it only contains the bundled orchestration template
+- Removes the `@.cduo/orchestration.md` reference from `CLAUDE.md` and `AGENTS.md`
+- Removes `.cduo/orchestration.md`
 
 Update the installed CLI:
 
@@ -282,7 +287,7 @@ The terminal starts in the wrong directory:
 Claude is missing the orchestration context:
 
 - Run `cduo init`
-- Note that only Claude flows manage `CLAUDE.md`
+- Check that `CLAUDE.md` contains `@.cduo/orchestration.md`
 
 Claude shows `SessionStart:startup hook error` before the prompt:
 

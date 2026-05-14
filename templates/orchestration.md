@@ -54,9 +54,9 @@ When you complete a task, the system will automatically:
 ## Technical Context
 
 - Auto-pipeline is enabled by default
-- Output extraction uses ANSI parsing and completion heuristics
-- In Claude mode, the `⏺` marker in Claude Code output is used for extraction
+- Relay content is read from agent transcript files, not from terminal screen output
 - Hook-based completion detection triggers automatic forwarding
+- To stop automatic relay intentionally, return exactly `~~~` as the full response
 
 ## Remember
 

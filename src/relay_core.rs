@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::transcripts::{self, TranscriptOutput};
 
@@ -259,8 +259,24 @@ pub fn discover_recent_codex_transcript(
     excluded: &HashSet<PathBuf>,
     expected_prompt: &str,
 ) -> Option<PathBuf> {
+    discover_recent_codex_transcript_in_root(
+        &codex_sessions_root(),
+        cwd,
+        started_at,
+        excluded,
+        expected_prompt,
+    )
+}
+
+fn discover_recent_codex_transcript_in_root(
+    root: &Path,
+    cwd: &Path,
+    started_at: chrono::DateTime<chrono::Utc>,
+    excluded: &HashSet<PathBuf>,
+    expected_prompt: &str,
+) -> Option<PathBuf> {
     let mut files = Vec::new();
-    collect_jsonl_files(&codex_sessions_root(), &mut files);
+    collect_jsonl_files(root, &mut files);
 
     files
         .into_iter()
@@ -268,36 +284,15 @@ pub fn discover_recent_codex_transcript(
         .filter(|path| codex_transcript_contains_user_prompt(path, expected_prompt))
         .filter_map(|path| {
             let (session_cwd, session_started_at) = codex_session_meta(&path)?;
-            if session_cwd != cwd || session_started_at < started_at {
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            let modified_at = system_time_to_utc(modified);
+            if session_cwd != cwd || (session_started_at < started_at && modified_at < started_at) {
                 return None;
             }
-            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
             Some((modified, path))
         })
         .max_by_key(|(modified, _)| *modified)
         .map(|(_, path)| path)
-}
-
-pub fn discover_recent_codex_transcripts(
-    cwd: &Path,
-    started_at: chrono::DateTime<chrono::Utc>,
-) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_jsonl_files(&codex_sessions_root(), &mut files);
-
-    let mut candidates = files
-        .into_iter()
-        .filter_map(|path| {
-            let (session_cwd, session_started_at) = codex_session_meta(&path)?;
-            if session_cwd != cwd || session_started_at < started_at {
-                return None;
-            }
-            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
-            Some((session_started_at, modified, path))
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by_key(|(session_started_at, modified, _)| (*session_started_at, *modified));
-    candidates.into_iter().map(|(_, _, path)| path).collect()
 }
 
 pub fn discover_recent_claude_transcript(
@@ -322,14 +317,19 @@ fn discover_recent_claude_transcript_in_root(
         .filter(|path| !excluded.contains(path))
         .filter_map(|path| {
             let (session_cwd, last_timestamp) = claude_transcript_meta(&path)?;
-            if session_cwd != cwd || last_timestamp < started_at {
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            let modified_at = system_time_to_utc(modified);
+            if session_cwd != cwd || (last_timestamp < started_at && modified_at < started_at) {
                 return None;
             }
-            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
             Some((last_timestamp, modified, path))
         })
         .max_by_key(|(last_timestamp, modified, _)| (*last_timestamp, *modified))
         .map(|(_, _, path)| path)
+}
+
+fn system_time_to_utc(value: SystemTime) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::<chrono::Utc>::from(value)
 }
 
 pub fn count_claude_stop_hook_summaries(path: &Path) -> usize {
@@ -482,6 +482,39 @@ mod tests {
             &cwd,
             timestamp - chrono::Duration::seconds(1),
             &HashSet::new(),
+        );
+
+        assert_eq!(discovered, Some(path));
+    }
+
+    #[test]
+    fn discovers_resumed_codex_transcript_when_file_was_modified_after_runtime_start() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions_root = temp.path().join("sessions");
+        let cwd = temp.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let path = sessions_root.join("rollout-resumed.jsonl");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old_session_ts = chrono::Utc::now() - chrono::Duration::days(1);
+        let started_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+        let cwd_json = serde_json::to_string(&cwd.to_string_lossy()).unwrap();
+        let prompt_json = serde_json::to_string("RESUMED_PROMPT").unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":{cwd_json},\"timestamp\":\"{}\"}}}}\n\
+                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":{prompt_json}}}]}}}}\n",
+                old_session_ts.to_rfc3339()
+            ),
+        )
+        .unwrap();
+
+        let discovered = discover_recent_codex_transcript_in_root(
+            &sessions_root,
+            &cwd,
+            started_at,
+            &HashSet::new(),
+            "RESUMED_PROMPT",
         );
 
         assert_eq!(discovered, Some(path));
