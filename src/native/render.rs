@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::cli::SplitLayout;
+use crate::native::footer::{build_channel_dot, focus_caret};
 use crate::native::layout::pane_layouts_for_view;
 use crate::native::pane::{Focus, Pane, PaneId};
 use crate::native::selection::MouseSelection;
@@ -28,12 +29,17 @@ pub(crate) fn draw(
     let footer_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
     let (layouts, divider_area) = pane_layouts_for_view(area, split, maximized);
 
+    let header_text = format!(
+        " cduo · A{}:{} | B{}:{} · {} ",
+        focus_caret(focus.0 == PaneId::A),
+        panes[0].agent,
+        focus_caret(focus.0 == PaneId::B),
+        panes[1].agent,
+        build_channel_dot(),
+    );
     frame.render_widget(
-        Paragraph::new(format!(
-            " cduo · A:{} | B:{} ",
-            panes[0].agent, panes[1].agent
-        ))
-        .style(Style::default().add_modifier(Modifier::BOLD)),
+        Paragraph::new(header_text)
+            .style(Style::default().add_modifier(Modifier::BOLD)),
         header_area,
     );
 
@@ -120,6 +126,10 @@ fn footer_token_style(token: &str) -> Option<Style> {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         );
+    }
+
+    if matches!(token, "◀" | "▶" | "⏸" | "⏹") {
+        return Some(Style::default().fg(Color::Yellow));
     }
 
     if token.strip_prefix("hook:").is_some() {

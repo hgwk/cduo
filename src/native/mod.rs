@@ -6,6 +6,7 @@
 //! session.
 
 pub mod access;
+pub(crate) mod footer;
 pub mod input;
 pub mod layout;
 pub mod pane;

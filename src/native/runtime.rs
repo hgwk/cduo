@@ -25,6 +25,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::cli::{Agent, SplitLayout};
 use crate::hook::{self, HookEvent};
 use crate::native::access::{agent_args, agent_program, AccessMode};
+use crate::native::footer::{mode_glyph, queue_gauge_glyph};
 use crate::native::input::{classify_key, key_to_bytes, GlobalAction};
 use crate::native::layout::{
     focus_index, pane_id_index, pane_layouts_for_view, resize_panes_for_view, split_label,
@@ -845,12 +846,9 @@ fn footer_with_relay_status(
     } else {
         "ON"
     };
+    let glyph = mode_glyph(mode);
     let pulse = if relay_paused && !relay_auto_stopped {
-        if heartbeat {
-            " ●"
-        } else {
-            " ○"
-        }
+        if heartbeat { " ●" } else { " ○" }
     } else {
         ""
     };
@@ -858,23 +856,9 @@ fn footer_with_relay_status(
     let a_to_b = if a_to_b_enabled { "ON" } else { "OFF" };
     let b_to_a = if b_to_a_enabled { "ON" } else { "OFF" };
     format!(
-        " relay[{mode}]{pulse} q[{queued_writes}]{gauge} A=>B[{a_to_b}] B=>A[{b_to_a}] | {}",
+        " {glyph} relay[{mode}]{pulse} · q[{queued_writes}]{gauge} · A=>B[{a_to_b}] · B=>A[{b_to_a}] · {}",
         message.trim()
     )
-}
-
-fn queue_gauge_glyph(n: usize) -> &'static str {
-    match n {
-        0 => "",
-        1 => " ▁",
-        2 => " ▂",
-        3..=4 => " ▃",
-        5..=8 => " ▄",
-        9..=16 => " ▅",
-        17..=32 => " ▆",
-        33..=64 => " ▇",
-        _ => " █",
-    }
 }
 
 fn recent_log_footer(log_path: &std::path::Path) -> String {
@@ -1152,6 +1136,7 @@ mod tests {
     fn footer_status_shows_relay_mode_queue_and_routes() {
         let footer = footer_with_relay_status("ready", true, 3, false, true, false, true);
 
+        assert!(footer.contains("⏸"));
         assert!(footer.contains("relay[PAUSE] ●"));
         assert!(footer.contains("q[3] ▃"));
         assert!(footer.contains("A=>B[OFF]"));
@@ -1163,23 +1148,11 @@ mod tests {
     fn footer_status_shows_stopped_relay_over_pause_state() {
         let footer = footer_with_relay_status("ready", true, 3, true, true, true, true);
 
+        assert!(footer.contains("⏹"));
         assert!(footer.contains("relay[STOP]"));
         assert!(!footer.contains("relay[PAUSE]"));
-        assert!(!footer.contains("●"));
-        assert!(!footer.contains("○"));
-    }
-
-    #[test]
-    fn queue_gauge_glyph_scales_queue_depth() {
-        assert_eq!(queue_gauge_glyph(0), "");
-        assert_eq!(queue_gauge_glyph(1), " ▁");
-        assert_eq!(queue_gauge_glyph(2), " ▂");
-        assert_eq!(queue_gauge_glyph(3), " ▃");
-        assert_eq!(queue_gauge_glyph(8), " ▄");
-        assert_eq!(queue_gauge_glyph(16), " ▅");
-        assert_eq!(queue_gauge_glyph(32), " ▆");
-        assert_eq!(queue_gauge_glyph(64), " ▇");
-        assert_eq!(queue_gauge_glyph(65), " █");
+        assert!(!footer.contains('●'));
+        assert!(!footer.contains('○'));
     }
 
     #[test]
