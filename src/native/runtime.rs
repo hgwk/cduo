@@ -25,7 +25,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::cli::{Agent, SplitLayout};
 use crate::hook::{self, HookEvent};
 use crate::native::access::{agent_args, agent_program, AccessMode};
-use crate::native::footer::{mode_glyph, queue_gauge_glyph};
+use crate::native::footer::{mode_glyph, queue_gauge_glyph, uptime_label};
 use crate::native::input::{classify_key, key_to_bytes, GlobalAction};
 use crate::native::layout::{
     focus_index, pane_id_index, pane_layouts_for_view, resize_panes_for_view, split_label,
@@ -275,7 +275,11 @@ fn ui_loop(
             dirty = true;
         }
 
-        if relay_paused && !dirty && last_frame.elapsed() >= Duration::from_millis(500) {
+        let needs_tick = relay_paused
+            || relay_auto_stopped
+            || broadcast_input.is_some()
+            || (a_to_b_enabled && b_to_a_enabled);
+        if needs_tick && !dirty && last_frame.elapsed() >= Duration::from_millis(250) {
             dirty = true;
         }
 
@@ -289,6 +293,7 @@ fn ui_loop(
                 b_to_a_enabled,
                 relay_auto_stopped,
                 heartbeat,
+                runtime_start.elapsed(),
             );
             terminal.draw(|frame| {
                 draw(frame, &panes, focus, &footer, selection, split, maximized);
@@ -309,7 +314,7 @@ fn ui_loop(
                     if let Some(buffer) = broadcast_input.as_mut() {
                         match handle_broadcast_key(key, buffer) {
                             BroadcastInputAction::Editing => {
-                                footer_msg = broadcast_input_footer(buffer);
+                                footer_msg = broadcast_input_footer(buffer, runtime_start.elapsed());
                             }
                             BroadcastInputAction::Cancel => {
                                 broadcast_input = None;
@@ -465,7 +470,7 @@ fn ui_loop(
                         }
                         GlobalAction::BroadcastInput => {
                             broadcast_input = Some(String::new());
-                            footer_msg = broadcast_input_footer("");
+                            footer_msg = broadcast_input_footer("", runtime_start.elapsed());
                             dirty = true;
                         }
                         GlobalAction::ScrollUp => {
@@ -791,8 +796,9 @@ fn send_broadcast_prompt(
     *footer_msg = format!(" broadcast sent to {sent} panes · relay paused · Ctrl-P: resume relay ");
 }
 
-fn broadcast_input_footer(buffer: &str) -> String {
-    format!(" broadcast> {buffer} · Enter: send to A/B · Esc: cancel ")
+fn broadcast_input_footer(buffer: &str, elapsed: Duration) -> String {
+    let caret = crate::native::footer::broadcast_caret_glyph(elapsed);
+    format!(" broadcast> {buffer}{caret} · Enter: send · Esc: cancel ")
 }
 
 fn send_control_or_footer(
@@ -830,6 +836,7 @@ fn route_footer(route: &str, enabled: bool) -> String {
     format!(" route[{route}:{state}] · Ctrl-1: A=>B · Ctrl-2: B=>A ")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn footer_with_relay_status(
     message: &str,
     relay_paused: bool,
@@ -838,7 +845,9 @@ fn footer_with_relay_status(
     b_to_a_enabled: bool,
     relay_auto_stopped: bool,
     heartbeat: bool,
+    elapsed: Duration,
 ) -> String {
+    use crate::native::footer::{pingpong_dot, stop_warn_glyph};
     let mode = if relay_auto_stopped {
         "STOP"
     } else if relay_paused {
@@ -847,6 +856,7 @@ fn footer_with_relay_status(
         "ON"
     };
     let glyph = mode_glyph(mode);
+    let warn = if relay_auto_stopped { stop_warn_glyph(elapsed) } else { "" };
     let pulse = if relay_paused && !relay_auto_stopped {
         if heartbeat { " ●" } else { " ○" }
     } else {
@@ -855,8 +865,15 @@ fn footer_with_relay_status(
     let gauge = queue_gauge_glyph(queued_writes);
     let a_to_b = if a_to_b_enabled { "ON" } else { "OFF" };
     let b_to_a = if b_to_a_enabled { "ON" } else { "OFF" };
+    let routes = if !relay_paused && !relay_auto_stopped && a_to_b_enabled && b_to_a_enabled {
+        let pp = pingpong_dot(elapsed);
+        format!("A {pp} B")
+    } else {
+        format!("A=>B[{a_to_b}] · B=>A[{b_to_a}]")
+    };
+    let uptime = uptime_label(elapsed);
     format!(
-        " {glyph} relay[{mode}]{pulse} · q[{queued_writes}]{gauge} · A=>B[{a_to_b}] · B=>A[{b_to_a}] · {}",
+        " {glyph}{warn} relay[{mode}]{pulse} · q[{queued_writes}]{gauge} · {routes} · up {uptime} · {}",
         message.trim()
     )
 }
@@ -1104,7 +1121,7 @@ mod tests {
 
     #[test]
     fn broadcast_footer_names_controls() {
-        let footer = broadcast_input_footer("compare this");
+        let footer = broadcast_input_footer("compare this", Duration::from_secs(0));
 
         assert!(footer.contains("broadcast> compare this"));
         assert!(footer.contains("Enter"));
@@ -1134,25 +1151,45 @@ mod tests {
 
     #[test]
     fn footer_status_shows_relay_mode_queue_and_routes() {
-        let footer = footer_with_relay_status("ready", true, 3, false, true, false, true);
+        let footer = footer_with_relay_status(
+            "ready",
+            true,
+            3,
+            false,
+            true,
+            false,
+            true,
+            Duration::from_secs(0),
+        );
 
         assert!(footer.contains("⏸"));
         assert!(footer.contains("relay[PAUSE] ●"));
         assert!(footer.contains("q[3] ▃"));
         assert!(footer.contains("A=>B[OFF]"));
         assert!(footer.contains("B=>A[ON]"));
+        assert!(footer.contains("up 00:00"));
         assert!(footer.ends_with("ready"));
     }
 
     #[test]
     fn footer_status_shows_stopped_relay_over_pause_state() {
-        let footer = footer_with_relay_status("ready", true, 3, true, true, true, true);
+        let footer = footer_with_relay_status(
+            "ready",
+            true,
+            3,
+            true,
+            true,
+            true,
+            true,
+            Duration::from_secs(0),
+        );
 
         assert!(footer.contains("⏹"));
         assert!(footer.contains("relay[STOP]"));
         assert!(!footer.contains("relay[PAUSE]"));
         assert!(!footer.contains('●'));
         assert!(!footer.contains('○'));
+        assert!(footer.contains("up 00:00"));
     }
 
     #[test]

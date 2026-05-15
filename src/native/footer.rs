@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 pub(crate) fn mode_glyph(mode: &str) -> &'static str {
     match mode {
         "ON" => "▶",
@@ -36,6 +38,36 @@ pub(crate) fn queue_gauge_glyph(n: usize) -> &'static str {
     }
 }
 
+pub(crate) fn uptime_label(elapsed: Duration) -> String {
+    let s = elapsed.as_secs();
+    if s >= 3600 {
+        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
+    } else {
+        format!("{:02}:{:02}", s / 60, s % 60)
+    }
+}
+
+pub(crate) fn pingpong_dot(elapsed: Duration) -> &'static str {
+    match (elapsed.as_millis() / 500) % 4 {
+        0 => "·>",
+        1 => "·>·",
+        2 => "<·",
+        _ => "·<·",
+    }
+}
+
+pub(crate) fn broadcast_caret_glyph(elapsed: Duration) -> &'static str {
+    match (elapsed.as_millis() / 350) % 3 {
+        0 => "▏",
+        1 => "▎",
+        _ => "▍",
+    }
+}
+
+pub(crate) fn stop_warn_glyph(elapsed: Duration) -> &'static str {
+    if (elapsed.as_millis() / 250) % 2 == 0 { "!" } else { " " }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +98,34 @@ mod tests {
     #[test]
     fn build_channel_dot_starts_with_marker() {
         assert!(build_channel_dot().starts_with('●'));
+    }
+
+    #[test]
+    fn uptime_label_formats() {
+        assert_eq!(uptime_label(Duration::from_secs(0)), "00:00");
+        assert_eq!(uptime_label(Duration::from_secs(75)), "01:15");
+        assert_eq!(uptime_label(Duration::from_secs(3725)), "1h02m");
+    }
+
+    #[test]
+    fn pingpong_cycles_through_four_frames() {
+        let frames: Vec<&str> = (0..4)
+            .map(|i| pingpong_dot(Duration::from_millis(i * 500)))
+            .collect();
+        assert_eq!(frames, vec!["·>", "·>·", "<·", "·<·"]);
+    }
+
+    #[test]
+    fn stop_warn_blinks() {
+        assert_eq!(stop_warn_glyph(Duration::from_millis(0)), "!");
+        assert_eq!(stop_warn_glyph(Duration::from_millis(250)), " ");
+    }
+
+    #[test]
+    fn broadcast_caret_widens_or_narrows() {
+        let a = broadcast_caret_glyph(Duration::from_millis(0));
+        let b = broadcast_caret_glyph(Duration::from_millis(350));
+        let c = broadcast_caret_glyph(Duration::from_millis(700));
+        assert!(a != b && b != c);
     }
 }

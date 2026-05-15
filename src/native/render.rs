@@ -112,6 +112,10 @@ fn footer_version_label() -> String {
 }
 
 fn footer_token_style(token: &str) -> Option<Style> {
+    if token == "!" {
+        return Some(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+    }
+
     if token == "broadcast>" {
         return Some(
             Style::default()
