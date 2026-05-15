@@ -166,11 +166,14 @@ fn footer_token_style(token: &str) -> Option<Style> {
         return Some(Style::default().fg(Color::Yellow));
     }
 
-    if token.chars().count() == 1
-        && matches!(
-            token.chars().next(),
-            Some('▁' | '▂' | '▃' | '▄' | '▅' | '▆' | '▇' | '█')
-        )
+    if matches!(token, "·>" | "·>·" | "<·" | "·<·") {
+        return Some(Style::default().fg(Color::Green));
+    }
+
+    if !token.is_empty()
+        && token
+            .chars()
+            .all(|c| matches!(c, '▁' | '▂' | '▃' | '▄' | '▅' | '▆' | '▇' | '█'))
     {
         return Some(Style::default().fg(Color::Cyan));
     }

@@ -104,7 +104,8 @@ pub(crate) fn hook_ping_glyph(since_last: Option<Duration>) -> &'static str {
     match since_last {
         Some(d) if d < Duration::from_millis(400) => "·",
         Some(d) if d < Duration::from_secs(10) => " ",
-        _ => "?",
+        Some(_) => "?",  // long silence after we've seen at least one ping
+        None => " ",      // never received → neutral
     }
 }
 
@@ -223,7 +224,7 @@ mod tests {
 
     #[test]
     fn hook_ping_glyph_phases() {
-        assert_eq!(hook_ping_glyph(None), "?");
+        assert_eq!(hook_ping_glyph(None), " ");
         assert_eq!(hook_ping_glyph(Some(Duration::from_millis(100))), "·");
         assert_eq!(hook_ping_glyph(Some(Duration::from_secs(3))), " ");
         assert_eq!(hook_ping_glyph(Some(Duration::from_secs(60))), "?");
