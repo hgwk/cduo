@@ -108,6 +108,16 @@ pub(crate) fn hook_ping_glyph(since_last: Option<Duration>) -> &'static str {
     }
 }
 
+pub(crate) fn marquee_window(line: &str, width: usize, offset: usize) -> String {
+    if line.chars().count() <= width || width == 0 {
+        return line.to_string();
+    }
+    let padded: String = format!("{line}     ");
+    let total = padded.chars().count();
+    let start = offset % total;
+    padded.chars().cycle().skip(start).take(width).collect()
+}
+
 pub(crate) fn error_toast_fade(msg: &str, elapsed: Duration) -> Option<String> {
     let ms = elapsed.as_millis();
     if ms >= 4_000 {
@@ -217,6 +227,16 @@ mod tests {
         assert_eq!(hook_ping_glyph(Some(Duration::from_millis(100))), "·");
         assert_eq!(hook_ping_glyph(Some(Duration::from_secs(3))), " ");
         assert_eq!(hook_ping_glyph(Some(Duration::from_secs(60))), "?");
+    }
+
+    #[test]
+    fn marquee_window_scrolls() {
+        let line = "abcdef";
+        assert_eq!(marquee_window(line, 10, 0), "abcdef");
+        let w = marquee_window(line, 4, 0);
+        assert_eq!(w.chars().count(), 4);
+        let w2 = marquee_window(line, 4, 1);
+        assert_ne!(w, w2);
     }
 
     #[test]

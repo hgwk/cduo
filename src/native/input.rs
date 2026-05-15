@@ -102,17 +102,23 @@ pub enum GlobalAction {
     ShowRelayLog,
     /// Toggle focused pane maximize layout preset.
     ToggleFocusLayout,
+    /// Open a footer prompt that sends one input to both panes.
+    BroadcastInput,
     /// Scroll the focused pane upward through scrollback.
     ScrollUp,
     /// Scroll the focused pane downward toward the live screen.
     ScrollDown,
+    /// Toggle the scrolling log ticker in the footer.
+    ToggleLogTicker,
 }
 
 /// Classify a key press at the runtime level. Ctrl-Q quits, Ctrl-W cycles
 /// focus forward, Ctrl-W with Shift cycles backward, Ctrl-P toggles relay
 /// pause, Ctrl-L toggles split layout, Ctrl-R triggers manual relay, Ctrl-X
 /// clears queued relay writes, Ctrl-1/Ctrl-2 toggle relay directions, Ctrl-G
-/// shows recent relay activity, and Ctrl-Z toggles focused-pane maximize.
+/// shows recent relay activity, Ctrl-Z toggles focused-pane maximize,
+/// Ctrl-Y opens broadcast input for both panes, and Ctrl-T toggles the
+/// scrolling log ticker in the footer.
 /// Everything else is forwarded.
 pub fn classify_key(key: KeyEvent) -> GlobalAction {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -134,6 +140,8 @@ pub fn classify_key(key: KeyEvent) -> GlobalAction {
         KeyCode::Char('2') if ctrl => GlobalAction::ToggleRelayBToA,
         KeyCode::Char('g') | KeyCode::Char('G') if ctrl => GlobalAction::ShowRelayLog,
         KeyCode::Char('z') | KeyCode::Char('Z') if ctrl => GlobalAction::ToggleFocusLayout,
+        KeyCode::Char('y') | KeyCode::Char('Y') if ctrl => GlobalAction::BroadcastInput,
+        KeyCode::Char('t') | KeyCode::Char('T') if ctrl => GlobalAction::ToggleLogTicker,
         KeyCode::PageUp => GlobalAction::ScrollUp,
         KeyCode::PageDown => GlobalAction::ScrollDown,
         _ => GlobalAction::Forward,
@@ -211,6 +219,22 @@ mod tests {
         assert_eq!(
             classify_key(key(KeyCode::Char('z'), KeyModifiers::CONTROL)),
             GlobalAction::ToggleFocusLayout
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+            GlobalAction::BroadcastInput
+        );
+    }
+
+    #[test]
+    fn ctrl_t_toggles_log_ticker() {
+        assert_eq!(
+            classify_key(key(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            GlobalAction::ToggleLogTicker
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::Char('T'), KeyModifiers::CONTROL)),
+            GlobalAction::ToggleLogTicker
         );
     }
 

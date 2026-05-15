@@ -55,7 +55,7 @@ pub(crate) fn draw(
         );
     }
     if divider_area.width > 0 && divider_area.height > 0 {
-        render_divider(frame, divider_area, split);
+        render_divider(frame, divider_area, split, focus);
     }
     if layouts[1].outer.width > 0 && layouts[1].outer.height > 0 {
         render_pane(
@@ -243,14 +243,20 @@ fn render_pane(
     }
 }
 
-fn render_divider(frame: &mut ratatui::Frame, area: Rect, split: SplitLayout) {
+fn render_divider(frame: &mut ratatui::Frame, area: Rect, split: SplitLayout, focus: Focus) {
     let borders = match split {
         SplitLayout::Columns => Borders::LEFT,
         SplitLayout::Rows => Borders::TOP,
     };
+    // Divider color shifts with focus: cyan when A is focused, yellow when B.
+    // The header focus caret is the primary indicator; this is a secondary cue.
+    let divider_color = match focus.0 {
+        PaneId::A => Color::Cyan,
+        PaneId::B => Color::Yellow,
+    };
     let block = Block::default()
         .borders(borders)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(divider_color));
     frame.render_widget(block, area);
 }
 

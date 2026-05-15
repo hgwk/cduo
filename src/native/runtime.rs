@@ -244,6 +244,10 @@ fn ui_loop(
     let mut relay_auto_stopped = false;
     let mut maximized: Option<PaneId> = None;
     let mut broadcast_input: Option<String> = None;
+    let mut log_ticker_on = false;
+    let mut log_ticker_offset: usize = 0;
+    let mut log_ticker_last_tick = Instant::now();
+    let mut log_ticker_line: String = String::new();
 
     // Per-pane buffer that mirrors what we forwarded to the agent. On every
     // \r/\n we flush it as a (pane_id, line) submission for the relay's codex
@@ -310,9 +314,29 @@ fn ui_loop(
             || broadcast_input.is_some()
             || (a_to_b_enabled && b_to_a_enabled)
             || error_set_at.is_some()
-            || last_hook_at.is_some();
+            || last_hook_at.is_some()
+            || log_ticker_on;
         if needs_tick && !dirty && last_frame.elapsed() >= Duration::from_millis(250) {
             dirty = true;
+        }
+
+        if log_ticker_on {
+            if log_ticker_last_tick.elapsed() >= Duration::from_millis(150) {
+                log_ticker_offset = log_ticker_offset.wrapping_add(1);
+                log_ticker_last_tick = Instant::now();
+                // Refresh cached line on each tick.
+                log_ticker_line = std::fs::read_to_string(log_path)
+                    .ok()
+                    .and_then(|c| c.lines().last().map(str::to_string))
+                    .unwrap_or_default();
+                dirty = true;
+            }
+            let display_width: usize = 80usize.saturating_sub(8);
+            footer_msg = format!(
+                " log: {} ",
+                crate::native::footer::marquee_window(&log_ticker_line, display_width, log_ticker_offset),
+            );
+            error_set_at = None;
         }
 
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
@@ -550,6 +574,21 @@ fn ui_loop(
                         GlobalAction::ScrollDown => {
                             panes[focus_index(focus)].scroll_down(SCROLL_LINES);
                             dirty = true;
+                        }
+                        GlobalAction::ToggleLogTicker => {
+                            log_ticker_on = !log_ticker_on;
+                            log_ticker_offset = 0;
+                            log_ticker_last_tick = Instant::now();
+                            if log_ticker_on {
+                                // Pre-read so the first frame has content without
+                                // waiting for the 150 ms tick.
+                                log_ticker_line = std::fs::read_to_string(log_path)
+                                    .ok()
+                                    .and_then(|c| c.lines().last().map(str::to_string))
+                                    .unwrap_or_default();
+                            }
+                            dirty = true;
+                            error_set_at = None;
                         }
                         GlobalAction::Forward => {
                             if let Some(bytes) = key_to_bytes(key) {
