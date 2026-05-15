@@ -10,7 +10,11 @@ pub(crate) fn mode_glyph(mode: &str) -> &'static str {
 }
 
 pub(crate) fn focus_caret(is_focused: bool) -> &'static str {
-    if is_focused { "◀" } else { " " }
+    if is_focused {
+        "◀"
+    } else {
+        " "
+    }
 }
 
 pub(crate) fn build_channel_dot() -> &'static str {
@@ -48,11 +52,10 @@ pub(crate) fn uptime_label(elapsed: Duration) -> String {
 }
 
 pub(crate) fn pingpong_dot(elapsed: Duration) -> &'static str {
-    match (elapsed.as_millis() / 500) % 4 {
-        0 => "·>",
-        1 => "·>·",
-        2 => "<·",
-        _ => "·<·",
+    match (elapsed.as_millis() / 500) % 3 {
+        0 => "..>",
+        1 => ".>.",
+        _ => ">..",
     }
 }
 
@@ -65,7 +68,11 @@ pub(crate) fn broadcast_caret_glyph(elapsed: Duration) -> &'static str {
 }
 
 pub(crate) fn stop_warn_glyph(elapsed: Duration) -> &'static str {
-    if (elapsed.as_millis() / 250) % 2 == 0 { "!" } else { " " }
+    if (elapsed.as_millis() / 250) % 2 == 0 {
+        "!"
+    } else {
+        " "
+    }
 }
 
 pub(crate) fn traffic_sparkline(samples: &[u64]) -> String {
@@ -84,11 +91,27 @@ pub(crate) fn traffic_sparkline(samples: &[u64]) -> String {
         .collect()
 }
 
-pub(crate) fn direction_arrow(active: bool, recently_hit: bool) -> &'static str {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    Left,
+    Right,
+}
+
+pub(crate) fn direction_arrow(
+    direction: Direction,
+    active: bool,
+    recently_hit: bool,
+) -> &'static str {
     match (active, recently_hit) {
         (false, _) => "─x─",
-        (true, true) => "━▶━",
-        (true, false) => "─▶─",
+        (true, true) => match direction {
+            Direction::Left => "━◀━",
+            Direction::Right => "━▶━",
+        },
+        (true, false) => match direction {
+            Direction::Left => "─◀─",
+            Direction::Right => "─▶─",
+        },
     }
 }
 
@@ -104,8 +127,8 @@ pub(crate) fn hook_ping_glyph(since_last: Option<Duration>) -> &'static str {
     match since_last {
         Some(d) if d < Duration::from_millis(400) => "·",
         Some(d) if d < Duration::from_secs(10) => " ",
-        Some(_) => "?",  // long silence after we've seen at least one ping
-        None => " ",      // never received → neutral
+        Some(_) => "?", // long silence after we've seen at least one ping
+        None => " ",    // never received → neutral
     }
 }
 
@@ -173,11 +196,12 @@ mod tests {
     }
 
     #[test]
-    fn pingpong_cycles_through_four_frames() {
+    fn pingpong_cycles_with_fixed_width_frames() {
         let frames: Vec<&str> = (0..4)
             .map(|i| pingpong_dot(Duration::from_millis(i * 500)))
             .collect();
-        assert_eq!(frames, vec!["·>", "·>·", "<·", "·<·"]);
+        assert_eq!(frames, vec!["..>", ".>.", ">..", "..>"]);
+        assert!(frames.iter().all(|frame| frame.chars().count() == 3));
     }
 
     #[test]
@@ -210,9 +234,11 @@ mod tests {
 
     #[test]
     fn direction_arrow_states() {
-        assert_eq!(direction_arrow(false, false), "─x─");
-        assert_eq!(direction_arrow(true, false), "─▶─");
-        assert_eq!(direction_arrow(true, true), "━▶━");
+        assert_eq!(direction_arrow(Direction::Right, false, false), "─x─");
+        assert_eq!(direction_arrow(Direction::Right, true, false), "─▶─");
+        assert_eq!(direction_arrow(Direction::Right, true, true), "━▶━");
+        assert_eq!(direction_arrow(Direction::Left, true, false), "─◀─");
+        assert_eq!(direction_arrow(Direction::Left, true, true), "━◀━");
     }
 
     #[test]
@@ -243,9 +269,15 @@ mod tests {
     #[test]
     fn error_toast_fades_then_expires() {
         let m = "boom";
-        assert!(error_toast_fade(m, Duration::from_millis(0)).unwrap().starts_with('█'));
-        assert!(error_toast_fade(m, Duration::from_millis(1500)).unwrap().starts_with('▓'));
-        assert!(error_toast_fade(m, Duration::from_millis(3500)).unwrap().starts_with('░'));
+        assert!(error_toast_fade(m, Duration::from_millis(0))
+            .unwrap()
+            .starts_with('█'));
+        assert!(error_toast_fade(m, Duration::from_millis(1500))
+            .unwrap()
+            .starts_with('▓'));
+        assert!(error_toast_fade(m, Duration::from_millis(3500))
+            .unwrap()
+            .starts_with('░'));
         assert!(error_toast_fade(m, Duration::from_millis(4500)).is_none());
     }
 }

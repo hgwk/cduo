@@ -99,7 +99,10 @@ mod tests {
 
     fn make_app() -> (Router, mpsc::Receiver<HookEvent>) {
         let (tx, rx) = mpsc::channel::<HookEvent>(16);
-        let state = HookState { relay_tx: tx, ping_tx: None };
+        let state = HookState {
+            relay_tx: tx,
+            ping_tx: None,
+        };
         let app = Router::new()
             .route("/hook", post(handle_hook))
             .with_state(state);
@@ -241,7 +244,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<HookEvent>(16);
         let app = Router::new()
             .route("/hook", post(handle_hook))
-            .with_state(HookState { relay_tx: tx, ping_tx: None });
+            .with_state(HookState {
+                relay_tx: tx,
+                ping_tx: None,
+            });
 
         let response = app
             .oneshot(
@@ -307,7 +313,10 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let app = Router::new()
             .route("/hook", post(handle_hook))
-            .with_state(HookState { relay_tx, ping_tx: None });
+            .with_state(HookState {
+                relay_tx,
+                ping_tx: None,
+            });
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -409,7 +418,10 @@ mod tests {
         .unwrap();
         let app = Router::new()
             .route("/hook", post(handle_hook))
-            .with_state(HookState { relay_tx: tx, ping_tx: None });
+            .with_state(HookState {
+                relay_tx: tx,
+                ping_tx: None,
+            });
 
         let response = tokio::time::timeout(
             std::time::Duration::from_millis(100),

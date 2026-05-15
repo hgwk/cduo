@@ -38,8 +38,7 @@ pub(crate) fn draw(
         build_channel_dot(),
     );
     frame.render_widget(
-        Paragraph::new(header_text)
-            .style(Style::default().add_modifier(Modifier::BOLD)),
+        Paragraph::new(header_text).style(Style::default().add_modifier(Modifier::BOLD)),
         header_area,
     );
 
@@ -95,15 +94,29 @@ fn styled_footer_line(message: &str, width: u16) -> Line<'static> {
 fn footer_with_version(message: &str, width: u16) -> String {
     let version = footer_version_label();
     let message = message.trim_end();
+    let (message, right_status) = split_footer_right_status(message);
+    let right = match right_status {
+        Some(status) => format!("{status} {version}"),
+        None => version,
+    };
     let message_len = message.chars().count();
-    let version_len = version.chars().count();
+    let right_len = right.chars().count();
     let width = usize::from(width);
 
-    if width > message_len + version_len {
-        let padding = width - message_len - version_len;
-        format!("{message}{}{version}", " ".repeat(padding))
+    if width > message_len + right_len {
+        let padding = width - message_len - right_len;
+        format!("{message}{}{right}", " ".repeat(padding))
+    } else if message.is_empty() {
+        right
     } else {
-        format!("{message} {version}")
+        format!("{message} {right}")
+    }
+}
+
+fn split_footer_right_status(message: &str) -> (&str, Option<&str>) {
+    match message.rsplit_once(" · ") {
+        Some((left, status)) if status.starts_with("up ") => (left.trim_end(), Some(status)),
+        _ => (message, None),
     }
 }
 
@@ -147,8 +160,8 @@ fn footer_token_style(token: &str) -> Option<Style> {
         return Some(Style::default().fg(Color::Cyan));
     }
 
-    if matches!(token, "─▶─" | "━▶━") {
-        let bold = token == "━▶━";
+    if matches!(token, "─▶─" | "━▶━" | "─◀─" | "━◀━") {
+        let bold = matches!(token, "━▶━" | "━◀━");
         let mut s = Style::default().fg(Color::Green);
         if bold {
             s = s.add_modifier(Modifier::BOLD);
@@ -166,7 +179,7 @@ fn footer_token_style(token: &str) -> Option<Style> {
         return Some(Style::default().fg(Color::Yellow));
     }
 
-    if matches!(token, "·>" | "·>·" | "<·" | "·<·") {
+    if matches!(token, "..>" | ".>." | ">..") {
         return Some(Style::default().fg(Color::Green));
     }
 
@@ -371,6 +384,27 @@ mod tests {
         assert_eq!(
             footer,
             format!(" relay:on │ ready {}", footer_version_label())
+        );
+    }
+
+    #[test]
+    fn footer_uptime_is_moved_next_to_right_version() {
+        let footer = footer_with_version(" relay[ON] · ready · up 01:02 ", 48);
+        let right = format!("up 01:02 {}", footer_version_label());
+
+        assert!(footer.starts_with(" relay[ON] · ready"));
+        assert!(footer.ends_with(&right));
+        assert!(!footer.contains("· up 01:02"));
+        assert_eq!(footer.chars().count(), 48);
+    }
+
+    #[test]
+    fn footer_uptime_and_version_append_when_tight() {
+        let footer = footer_with_version(" relay[ON] · up 01:02 ", 10);
+
+        assert_eq!(
+            footer,
+            format!(" relay[ON] up 01:02 {}", footer_version_label())
         );
     }
 }

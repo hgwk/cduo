@@ -43,6 +43,7 @@ use crate::native::ui::pane_pty_size;
 const FRAME_BUDGET_MS: u64 = 16;
 const POLL_INTERVAL_MS: u64 = 8;
 const SCROLL_LINES: usize = 5;
+const LOG_TICKER_STATUS_RESERVE: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeOptions {
@@ -84,7 +85,13 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
     tokio::spawn({
         let shutdown_rx = shutdown_tx.subscribe();
         async move {
-            hook::run_hook_server_on_listener(hook_listener, shutdown_rx, hook_tx, Some(hook_ping_tx)).await;
+            hook::run_hook_server_on_listener(
+                hook_listener,
+                shutdown_rx,
+                hook_tx,
+                Some(hook_ping_tx),
+            )
+            .await;
         }
     });
 
@@ -194,6 +201,7 @@ fn ui_loop(
     terminal.hide_cursor()?;
 
     let initial = terminal.size()?;
+    let mut footer_width = initial.width;
     let (pane_cols, pane_rows) = pane_pty_size(initial.width, initial.height, opts.split);
     let port_str = hook_port.to_string();
     let mode = AccessMode::from_flags(opts.yolo, opts.full_access)?;
@@ -277,8 +285,10 @@ fn ui_loop(
             hook_port,
         );
 
-        if !relay_paused {
-            drain_paused_writes(&mut panes, &mut paused_writes, log_path);
+        if !relay_paused
+            && drain_paused_writes(&mut panes, &mut paused_writes, log_path, &mut traffic)
+        {
+            dirty = true;
         }
 
         if drain_relay_writes(
@@ -331,12 +341,9 @@ fn ui_loop(
                     .unwrap_or_default();
                 dirty = true;
             }
-            let display_width: usize = 80usize.saturating_sub(8);
-            footer_msg = format!(
-                " log: {} ",
-                crate::native::footer::marquee_window(&log_ticker_line, display_width, log_ticker_offset),
-            );
-            error_set_at = None;
+            if error_set_at.is_none() {
+                footer_msg = log_ticker_footer(&log_ticker_line, log_ticker_offset, footer_width);
+            }
         }
 
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
@@ -347,7 +354,11 @@ fn ui_loop(
                 match crate::native::footer::error_toast_fade(&error_raw_msg, at.elapsed()) {
                     Some(faded) => footer_msg = faded,
                     None => {
-                        footer_msg = default_footer_msg.clone();
+                        footer_msg = if log_ticker_on {
+                            log_ticker_footer(&log_ticker_line, log_ticker_offset, footer_width)
+                        } else {
+                            default_footer_msg.clone()
+                        };
                         error_set_at = None;
                     }
                 }
@@ -395,7 +406,8 @@ fn ui_loop(
                     if let Some(buffer) = broadcast_input.as_mut() {
                         match handle_broadcast_key(key, buffer) {
                             BroadcastInputAction::Editing => {
-                                footer_msg = broadcast_input_footer(buffer, runtime_start.elapsed());
+                                footer_msg =
+                                    broadcast_input_footer(buffer, runtime_start.elapsed());
                                 error_set_at = None;
                             }
                             BroadcastInputAction::Cancel => {
@@ -604,6 +616,7 @@ fn ui_loop(
                     }
                 }
                 Event::Resize(cols, rows) => {
+                    footer_width = cols;
                     resize_panes_for_view(&mut panes, cols, rows, split, maximized);
                     dirty = true;
                 }
@@ -744,15 +757,26 @@ fn drain_paused_writes(
     panes: &mut [Pane; 2],
     paused_writes: &mut VecDeque<(String, Vec<u8>)>,
     log_path: &std::path::Path,
-) {
+    traffic: &mut TrafficCounters,
+) -> bool {
+    let mut dirty = false;
     while let Some((target, bytes)) = paused_writes.pop_front() {
-        if let Err(err) = write_to_target(panes, &target, &bytes) {
-            crate::relay_core::log_event(
-                log_path,
-                format!("relay_write_error target={target} error=\"{err}\""),
-            );
+        let byte_len = bytes.len() as u64;
+        match write_to_target(panes, &target, &bytes) {
+            Ok(()) => {
+                record_relay_traffic(traffic, &target, byte_len, Instant::now());
+                dirty = true;
+            }
+            Err(err) => {
+                crate::relay_core::log_event(
+                    log_path,
+                    format!("relay_write_error target={target} error=\"{err}\""),
+                );
+                dirty = true;
+            }
         }
     }
+    dirty
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -778,20 +802,10 @@ fn drain_relay_writes(
                     dirty = true;
                 } else {
                     let byte_len = bytes.len() as u64;
-                    let target_str = target.clone();
                     match write_to_target(panes, &target, &bytes) {
                         Ok(()) => {
-                            match target_str.as_str() {
-                                "b" => {
-                                    traffic.a_to_b_bytes += byte_len;
-                                    traffic.last_a_to_b_at = Some(Instant::now());
-                                }
-                                "a" => {
-                                    traffic.b_to_a_bytes += byte_len;
-                                    traffic.last_b_to_a_at = Some(Instant::now());
-                                }
-                                _ => {}
-                            }
+                            record_relay_traffic(traffic, &target, byte_len, Instant::now());
+                            dirty = true;
                         }
                         Err(err) => {
                             crate::relay_core::log_event(
@@ -1002,6 +1016,32 @@ struct TrafficCounters {
     last_sample_at: Instant,
 }
 
+fn record_relay_traffic(traffic: &mut TrafficCounters, target: &str, byte_len: u64, now: Instant) {
+    match target {
+        "b" => {
+            traffic.a_to_b_bytes += byte_len;
+            traffic.last_a_to_b_at = Some(now);
+        }
+        "a" => {
+            traffic.b_to_a_bytes += byte_len;
+            traffic.last_b_to_a_at = Some(now);
+        }
+        _ => {}
+    }
+}
+
+fn log_ticker_footer(line: &str, offset: usize, footer_width: u16) -> String {
+    let chrome_width = " log:  ".chars().count();
+    let display_width =
+        usize::from(footer_width).saturating_sub(LOG_TICKER_STATUS_RESERVE + chrome_width);
+    let window = if display_width == 0 {
+        String::new()
+    } else {
+        crate::native::footer::marquee_window(line, display_width, offset)
+    };
+    format!(" log: {window} ")
+}
+
 struct RelayStatusView<'a> {
     message: &'a str,
     relay_paused: bool,
@@ -1017,7 +1057,7 @@ struct RelayStatusView<'a> {
 
 fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
     use crate::native::footer::{
-        activity_dot, direction_arrow, stop_warn_glyph, traffic_sparkline,
+        activity_dot, direction_arrow, stop_warn_glyph, traffic_sparkline, Direction,
     };
     let RelayStatusView {
         message,
@@ -1040,9 +1080,17 @@ fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
         "ON"
     };
     let glyph = mode_glyph(mode);
-    let warn = if relay_auto_stopped { stop_warn_glyph(elapsed) } else { "" };
+    let warn = if relay_auto_stopped {
+        stop_warn_glyph(elapsed)
+    } else {
+        ""
+    };
     let pulse = if relay_paused && !relay_auto_stopped {
-        if heartbeat { " ●" } else { " ○" }
+        if heartbeat {
+            " ●"
+        } else {
+            " ○"
+        }
     } else {
         ""
     };
@@ -1056,8 +1104,8 @@ fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
         .last_b_to_a_at
         .map(|t| now.duration_since(t) < Duration::from_millis(200))
         .unwrap_or(false);
-    let arrow_ab = direction_arrow(a_to_b_enabled, pulse_a_to_b);
-    let arrow_ba = direction_arrow(b_to_a_enabled, pulse_b_to_a);
+    let arrow_ab = direction_arrow(Direction::Right, a_to_b_enabled, pulse_a_to_b);
+    let arrow_ba = direction_arrow(Direction::Left, b_to_a_enabled, pulse_b_to_a);
     let spark_ab_vec: Vec<u64> = traffic.samples_a_to_b.iter().copied().collect();
     let spark_ba_vec: Vec<u64> = traffic.samples_b_to_a.iter().copied().collect();
     let spark_ab = traffic_sparkline(&spark_ab_vec);
@@ -1073,7 +1121,7 @@ fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
     };
     let uptime = uptime_label(elapsed);
     format!(
-        " {glyph}{warn} relay[{mode}]{pulse} · q[{queued_writes}]{gauge} · {routes} · up {uptime} · {}",
+        " {glyph}{warn} relay[{mode}]{pulse} · q[{queued_writes}]{gauge} · {routes} · {} · up {uptime}",
         message.trim()
     )
 }
@@ -1362,6 +1410,35 @@ mod tests {
     }
 
     #[test]
+    fn record_relay_traffic_counts_targets_and_marks_last_write() {
+        let mut traffic = test_traffic();
+        let now = Instant::now();
+
+        record_relay_traffic(&mut traffic, "b", 42, now);
+        record_relay_traffic(&mut traffic, "a", 7, now + Duration::from_millis(1));
+        record_relay_traffic(&mut traffic, "unknown", 99, now + Duration::from_millis(2));
+
+        assert_eq!(traffic.a_to_b_bytes, 42);
+        assert_eq!(traffic.b_to_a_bytes, 7);
+        assert_eq!(traffic.last_a_to_b_at, Some(now));
+        assert_eq!(traffic.last_b_to_a_at, Some(now + Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn log_ticker_footer_uses_footer_width_for_window() {
+        let footer = log_ticker_footer("abcdefghijklmnopqrstuvwxyz", 0, 80);
+
+        assert_eq!(footer, " log: abcdefghi ");
+        assert_eq!(footer.chars().count(), 16);
+    }
+
+    #[test]
+    fn log_ticker_footer_scrolls_and_handles_tiny_width() {
+        assert_eq!(log_ticker_footer("abcdefghijkl", 1, 75), " log: bcde ");
+        assert_eq!(log_ticker_footer("abcdef", 0, 70), " log:  ");
+    }
+
+    #[test]
     fn footer_status_shows_relay_mode_queue_and_routes() {
         let traffic = test_traffic();
         let footer = footer_with_relay_status(RelayStatusView {
@@ -1381,9 +1458,10 @@ mod tests {
         assert!(footer.contains("relay[PAUSE] ●"));
         assert!(footer.contains("q[3] ▃"));
         assert!(footer.contains("─x─")); // a_to_b disabled
-        assert!(footer.contains("─▶─")); // b_to_a enabled
+        assert!(footer.contains("─◀─")); // b_to_a enabled
+        assert!(footer.contains("ready"));
         assert!(footer.contains("up 00:00"));
-        assert!(footer.ends_with("ready"));
+        assert!(footer.ends_with("up 00:00"));
     }
 
     #[test]
