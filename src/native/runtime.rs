@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, MouseButton, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -223,11 +223,10 @@ fn ui_loop(
     let mut panes: [Pane; 2] = [pane_a, pane_b];
     let mut focus = Focus(PaneId::A);
     let mut last_frame = Instant::now() - Duration::from_secs(1);
+    let runtime_start = Instant::now();
     let mut dirty = true;
     let mut footer_msg = format!(
-        " A:{}  B:{}  · hook:{}  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy pane text  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
-        agent_program(opts.agent_a),
-        agent_program(opts.agent_b),
+        " hook:{}  · Ctrl-Y: broadcast  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
         hook_port,
     );
     let default_footer_msg = footer_msg.clone();
@@ -238,6 +237,7 @@ fn ui_loop(
     let mut b_to_a_enabled = true;
     let mut relay_auto_stopped = false;
     let mut maximized: Option<PaneId> = None;
+    let mut broadcast_input: Option<String> = None;
 
     // Per-pane buffer that mirrors what we forwarded to the agent. On every
     // \r/\n we flush it as a (pane_id, line) submission for the relay's codex
@@ -274,7 +274,12 @@ fn ui_loop(
             dirty = true;
         }
 
+        if relay_paused && !dirty && last_frame.elapsed() >= Duration::from_millis(500) {
+            dirty = true;
+        }
+
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
+            let heartbeat = relay_paused && (runtime_start.elapsed().as_millis() / 500) % 2 == 0;
             let footer = footer_with_relay_status(
                 &footer_msg,
                 relay_paused,
@@ -282,6 +287,7 @@ fn ui_loop(
                 a_to_b_enabled,
                 b_to_a_enabled,
                 relay_auto_stopped,
+                heartbeat,
             );
             terminal.draw(|frame| {
                 draw(frame, &panes, focus, &footer, selection, split, maximized);
@@ -294,6 +300,33 @@ fn ui_loop(
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
+                    if broadcast_input.is_some() && classify_key(key) == GlobalAction::Quit {
+                        break 'main;
+                    }
+                    if let Some(buffer) = broadcast_input.as_mut() {
+                        match handle_broadcast_key(key, buffer) {
+                            BroadcastInputAction::Editing => {
+                                footer_msg = broadcast_input_footer(buffer);
+                            }
+                            BroadcastInputAction::Cancel => {
+                                broadcast_input = None;
+                                footer_msg = default_footer_msg.clone();
+                            }
+                            BroadcastInputAction::Submit(prompt) => {
+                                broadcast_input = None;
+                                send_broadcast_prompt(
+                                    &mut panes,
+                                    &prompt,
+                                    &mut input_buf,
+                                    &input_tx,
+                                    &mut footer_msg,
+                                );
+                                relay_paused = true;
+                            }
+                        }
+                        dirty = true;
                         continue;
                     }
                     match classify_key(key) {
@@ -429,6 +462,11 @@ fn ui_loop(
                             };
                             dirty = true;
                         }
+                        GlobalAction::BroadcastInput => {
+                            broadcast_input = Some(String::new());
+                            footer_msg = broadcast_input_footer("");
+                            dirty = true;
+                        }
                         GlobalAction::ScrollUp => {
                             panes[focus_index(focus)].scroll_up(SCROLL_LINES);
                             dirty = true;
@@ -504,15 +542,41 @@ fn ui_loop(
                             }
                         }
                         MouseEventKind::ScrollUp => {
-                            let pane =
-                                mouse_pane(mouse.column, mouse.row, layouts).unwrap_or(focus.0);
-                            panes[pane_id_index(pane)].scroll_up(SCROLL_LINES);
+                            if let Some((pane, row, col)) =
+                                mouse_cell(mouse.column, mouse.row, layouts)
+                            {
+                                handle_mouse_wheel(
+                                    &mut panes,
+                                    pane,
+                                    MouseEventKind::ScrollUp,
+                                    row,
+                                    col,
+                                    &mut footer_msg,
+                                );
+                            } else {
+                                let pane =
+                                    mouse_pane(mouse.column, mouse.row, layouts).unwrap_or(focus.0);
+                                panes[pane_id_index(pane)].scroll_up(SCROLL_LINES);
+                            }
                             dirty = true;
                         }
                         MouseEventKind::ScrollDown => {
-                            let pane =
-                                mouse_pane(mouse.column, mouse.row, layouts).unwrap_or(focus.0);
-                            panes[pane_id_index(pane)].scroll_down(SCROLL_LINES);
+                            if let Some((pane, row, col)) =
+                                mouse_cell(mouse.column, mouse.row, layouts)
+                            {
+                                handle_mouse_wheel(
+                                    &mut panes,
+                                    pane,
+                                    MouseEventKind::ScrollDown,
+                                    row,
+                                    col,
+                                    &mut footer_msg,
+                                );
+                            } else {
+                                let pane =
+                                    mouse_pane(mouse.column, mouse.row, layouts).unwrap_or(focus.0);
+                                panes[pane_id_index(pane)].scroll_down(SCROLL_LINES);
+                            }
                             dirty = true;
                         }
                         _ => {}
@@ -623,6 +687,113 @@ fn write_to_target(panes: &mut [Pane; 2], target: &str, bytes: &[u8]) -> Result<
     panes[idx].write(bytes)
 }
 
+fn handle_mouse_wheel(
+    panes: &mut [Pane; 2],
+    pane: PaneId,
+    kind: MouseEventKind,
+    row: u16,
+    col: u16,
+    footer_msg: &mut String,
+) {
+    let idx = pane_id_index(pane);
+    if panes[idx].agent == "codex" {
+        if let Some(bytes) = mouse_wheel_bytes(kind, row, col) {
+            if let Err(err) = panes[idx].write(&bytes) {
+                *footer_msg = write_error_footer(pane.label(), &err);
+            }
+        }
+        return;
+    }
+
+    match kind {
+        MouseEventKind::ScrollUp => panes[idx].scroll_up(SCROLL_LINES),
+        MouseEventKind::ScrollDown => panes[idx].scroll_down(SCROLL_LINES),
+        _ => {}
+    }
+}
+
+fn mouse_wheel_bytes(kind: MouseEventKind, row: u16, col: u16) -> Option<Vec<u8>> {
+    let button = match kind {
+        MouseEventKind::ScrollUp => 64,
+        MouseEventKind::ScrollDown => 65,
+        _ => return None,
+    };
+    Some(format!("\x1b[<{button};{};{}M", col + 1, row + 1).into_bytes())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BroadcastInputAction {
+    Editing,
+    Cancel,
+    Submit(String),
+}
+
+fn handle_broadcast_key(key: KeyEvent, buffer: &mut String) -> BroadcastInputAction {
+    match key.code {
+        KeyCode::Esc => BroadcastInputAction::Cancel,
+        KeyCode::Char('y') | KeyCode::Char('Y')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            BroadcastInputAction::Cancel
+        }
+        KeyCode::Enter => {
+            let prompt = buffer.trim().to_string();
+            if prompt.is_empty() {
+                BroadcastInputAction::Cancel
+            } else {
+                BroadcastInputAction::Submit(prompt)
+            }
+        }
+        KeyCode::Backspace => {
+            buffer.pop();
+            BroadcastInputAction::Editing
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
+        {
+            buffer.push(c);
+            BroadcastInputAction::Editing
+        }
+        _ => BroadcastInputAction::Editing,
+    }
+}
+
+fn broadcast_prompt_bytes(prompt: &str) -> Vec<u8> {
+    format!("{prompt}\r").into_bytes()
+}
+
+fn send_broadcast_prompt(
+    panes: &mut [Pane; 2],
+    prompt: &str,
+    input_buf: &mut HashMap<PaneId, Vec<u8>>,
+    input_tx: &mpsc::Sender<(String, String)>,
+    footer_msg: &mut String,
+) {
+    let bytes = broadcast_prompt_bytes(prompt);
+    let mut sent = 0;
+    for pane in [PaneId::A, PaneId::B] {
+        let idx = pane_id_index(pane);
+        match panes[idx].write(&bytes) {
+            Ok(()) => {
+                capture_line(pane, &bytes, input_buf, input_tx);
+                sent += 1;
+            }
+            Err(err) => {
+                *footer_msg = write_error_footer(pane.label(), &err);
+                return;
+            }
+        }
+    }
+
+    *footer_msg = format!(" broadcast sent to {sent} panes · relay paused · Ctrl-P: resume relay ");
+}
+
+fn broadcast_input_footer(buffer: &str) -> String {
+    format!(" broadcast> {buffer} · Enter: send to A/B · Esc: cancel ")
+}
+
 fn send_control_or_footer(
     control_tx: &mpsc::Sender<relay::RelayControl>,
     control: relay::RelayControl,
@@ -649,8 +820,13 @@ fn clear_paused_writes(paused_writes: &mut VecDeque<(String, Vec<u8>)>) -> usize
 }
 
 fn route_footer(route: &str, enabled: bool) -> String {
-    let state = if enabled { "on" } else { "off" };
-    format!(" relay {route}: {state} · Ctrl-1: A→B · Ctrl-2: B→A ")
+    let state = if enabled { "ON" } else { "OFF" };
+    let route = match route {
+        "A→B" => "A=>B",
+        "B→A" => "B=>A",
+        other => other,
+    };
+    format!(" route[{route}:{state}] · Ctrl-1: A=>B · Ctrl-2: B=>A ")
 }
 
 fn footer_with_relay_status(
@@ -660,20 +836,45 @@ fn footer_with_relay_status(
     a_to_b_enabled: bool,
     b_to_a_enabled: bool,
     relay_auto_stopped: bool,
+    heartbeat: bool,
 ) -> String {
     let mode = if relay_auto_stopped {
-        "stopped"
+        "STOP"
     } else if relay_paused {
-        "paused"
+        "PAUSE"
     } else {
-        "on"
+        "ON"
     };
-    let a_to_b = if a_to_b_enabled { "on" } else { "off" };
-    let b_to_a = if b_to_a_enabled { "on" } else { "off" };
+    let pulse = if relay_paused && !relay_auto_stopped {
+        if heartbeat {
+            " ●"
+        } else {
+            " ○"
+        }
+    } else {
+        ""
+    };
+    let gauge = queue_gauge_glyph(queued_writes);
+    let a_to_b = if a_to_b_enabled { "ON" } else { "OFF" };
+    let b_to_a = if b_to_a_enabled { "ON" } else { "OFF" };
     format!(
-        " relay:{mode} q:{queued_writes} A→B:{a_to_b} B→A:{b_to_a} │ {}",
+        " relay[{mode}]{pulse} q[{queued_writes}]{gauge} A=>B[{a_to_b}] B=>A[{b_to_a}] | {}",
         message.trim()
     )
+}
+
+fn queue_gauge_glyph(n: usize) -> &'static str {
+    match n {
+        0 => "",
+        1 => " ▁",
+        2 => " ▂",
+        3..=4 => " ▃",
+        5..=8 => " ▄",
+        9..=16 => " ▅",
+        17..=32 => " ▆",
+        33..=64 => " ▇",
+        _ => " █",
+    }
 }
 
 fn recent_log_footer(log_path: &std::path::Path) -> String {
@@ -818,6 +1019,115 @@ mod tests {
     }
 
     #[test]
+    fn mouse_wheel_bytes_use_sgr_coordinates() {
+        assert_eq!(
+            mouse_wheel_bytes(MouseEventKind::ScrollUp, 2, 3).unwrap(),
+            b"\x1b[<64;4;3M"
+        );
+        assert_eq!(
+            mouse_wheel_bytes(MouseEventKind::ScrollDown, 2, 3).unwrap(),
+            b"\x1b[<65;4;3M"
+        );
+        assert!(mouse_wheel_bytes(MouseEventKind::Moved, 2, 3).is_none());
+    }
+
+    #[test]
+    fn broadcast_key_buffer_edits_and_submits() {
+        let mut buffer = String::new();
+
+        assert_eq!(
+            handle_broadcast_key(
+                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+                &mut buffer
+            ),
+            BroadcastInputAction::Editing
+        );
+        assert_eq!(
+            handle_broadcast_key(
+                KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+                &mut buffer
+            ),
+            BroadcastInputAction::Editing
+        );
+        assert_eq!(buffer, "hi");
+
+        assert_eq!(
+            handle_broadcast_key(
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                &mut buffer
+            ),
+            BroadcastInputAction::Editing
+        );
+        assert_eq!(buffer, "h");
+
+        assert_eq!(
+            handle_broadcast_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &mut buffer
+            ),
+            BroadcastInputAction::Submit("h".to_string())
+        );
+    }
+
+    #[test]
+    fn broadcast_key_ignores_control_chars_and_cancels() {
+        let mut buffer = "keep".to_string();
+
+        assert_eq!(
+            handle_broadcast_key(
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &mut buffer
+            ),
+            BroadcastInputAction::Editing
+        );
+        assert_eq!(buffer, "keep");
+        assert_eq!(
+            handle_broadcast_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut buffer),
+            BroadcastInputAction::Cancel
+        );
+    }
+
+    #[test]
+    fn broadcast_key_ctrl_y_cancels_mode() {
+        let mut buffer = "draft".to_string();
+
+        assert_eq!(
+            handle_broadcast_key(
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+                &mut buffer
+            ),
+            BroadcastInputAction::Cancel
+        );
+        assert_eq!(buffer, "draft");
+    }
+
+    #[test]
+    fn broadcast_prompt_bytes_add_enter_and_capture_both_panes() {
+        let bytes = broadcast_prompt_bytes("same prompt");
+        assert_eq!(bytes, b"same prompt\r");
+
+        let mut buf: HashMap<PaneId, Vec<u8>> = HashMap::new();
+        let (tx, mut rx) = mpsc::channel::<(String, String)>(8);
+
+        capture_line(PaneId::A, &bytes, &mut buf, &tx);
+        capture_line(PaneId::B, &bytes, &mut buf, &tx);
+
+        let first = rx.try_recv().unwrap();
+        let second = rx.try_recv().unwrap();
+        assert_eq!(first, ("a".to_string(), "same prompt".to_string()));
+        assert_eq!(second, ("b".to_string(), "same prompt".to_string()));
+    }
+
+    #[test]
+    fn broadcast_footer_names_controls() {
+        let footer = broadcast_input_footer("compare this");
+
+        assert!(footer.contains("broadcast> compare this"));
+        assert!(footer.contains("Enter"));
+        assert!(footer.contains("Esc"));
+    }
+
+    #[test]
     fn send_control_or_footer_reports_closed_control_channel() {
         let (tx, rx) = mpsc::channel::<relay::RelayControl>(1);
         drop(rx);
@@ -840,20 +1150,43 @@ mod tests {
 
     #[test]
     fn footer_status_shows_relay_mode_queue_and_routes() {
-        let footer = footer_with_relay_status("ready", true, 3, false, true, false);
+        let footer = footer_with_relay_status("ready", true, 3, false, true, false, true);
 
-        assert!(footer.contains("relay:paused"));
-        assert!(footer.contains("q:3"));
-        assert!(footer.contains("A→B:off"));
-        assert!(footer.contains("B→A:on"));
+        assert!(footer.contains("relay[PAUSE] ●"));
+        assert!(footer.contains("q[3] ▃"));
+        assert!(footer.contains("A=>B[OFF]"));
+        assert!(footer.contains("B=>A[ON]"));
         assert!(footer.ends_with("ready"));
     }
 
     #[test]
     fn footer_status_shows_stopped_relay_over_pause_state() {
-        let footer = footer_with_relay_status("ready", true, 3, true, true, true);
+        let footer = footer_with_relay_status("ready", true, 3, true, true, true, true);
 
-        assert!(footer.contains("relay:stopped"));
-        assert!(!footer.contains("relay:paused"));
+        assert!(footer.contains("relay[STOP]"));
+        assert!(!footer.contains("relay[PAUSE]"));
+        assert!(!footer.contains("●"));
+        assert!(!footer.contains("○"));
+    }
+
+    #[test]
+    fn queue_gauge_glyph_scales_queue_depth() {
+        assert_eq!(queue_gauge_glyph(0), "");
+        assert_eq!(queue_gauge_glyph(1), " ▁");
+        assert_eq!(queue_gauge_glyph(2), " ▂");
+        assert_eq!(queue_gauge_glyph(3), " ▃");
+        assert_eq!(queue_gauge_glyph(8), " ▄");
+        assert_eq!(queue_gauge_glyph(16), " ▅");
+        assert_eq!(queue_gauge_glyph(32), " ▆");
+        assert_eq!(queue_gauge_glyph(64), " ▇");
+        assert_eq!(queue_gauge_glyph(65), " █");
+    }
+
+    #[test]
+    fn route_footer_uses_ascii_indicator() {
+        let footer = route_footer("A→B", false);
+
+        assert!(footer.contains("route[A=>B:OFF]"));
+        assert!(!footer.contains("A→B"));
     }
 }
