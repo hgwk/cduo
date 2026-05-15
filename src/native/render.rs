@@ -147,6 +147,21 @@ fn footer_token_style(token: &str) -> Option<Style> {
         return Some(Style::default().fg(Color::Cyan));
     }
 
+    if matches!(token, "─▶─" | "━▶━") {
+        let bold = token == "━▶━";
+        let mut s = Style::default().fg(Color::Green);
+        if bold {
+            s = s.add_modifier(Modifier::BOLD);
+        }
+        return Some(s);
+    }
+    if token == "─x─" {
+        return Some(Style::default().fg(Color::Red));
+    }
+    if matches!(token, "∘") {
+        return Some(Style::default().fg(Color::DarkGray));
+    }
+
     if matches!(token, "●" | "○") {
         return Some(Style::default().fg(Color::Yellow));
     }

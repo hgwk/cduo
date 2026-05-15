@@ -68,6 +68,38 @@ pub(crate) fn stop_warn_glyph(elapsed: Duration) -> &'static str {
     if (elapsed.as_millis() / 250) % 2 == 0 { "!" } else { " " }
 }
 
+pub(crate) fn traffic_sparkline(samples: &[u64]) -> String {
+    let max = samples.iter().copied().max().unwrap_or(0);
+    if max == 0 {
+        return "▁".repeat(samples.len().min(8));
+    }
+    let bars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    samples
+        .iter()
+        .take(8)
+        .map(|&v| {
+            let idx = ((v as f64 / max as f64) * 7.0).round() as usize;
+            bars[idx.min(7)]
+        })
+        .collect()
+}
+
+pub(crate) fn direction_arrow(active: bool, recently_hit: bool) -> &'static str {
+    match (active, recently_hit) {
+        (false, _) => "─x─",
+        (true, true) => "━▶━",
+        (true, false) => "─▶─",
+    }
+}
+
+pub(crate) fn activity_dot(bytes_last_sec: u64) -> &'static str {
+    match bytes_last_sec {
+        0 => "·",
+        1..=128 => "∘",
+        _ => "●",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +159,33 @@ mod tests {
         let b = broadcast_caret_glyph(Duration::from_millis(350));
         let c = broadcast_caret_glyph(Duration::from_millis(700));
         assert!(a != b && b != c);
+    }
+
+    #[test]
+    fn sparkline_empty_is_baseline() {
+        assert_eq!(traffic_sparkline(&[0, 0, 0]), "▁▁▁");
+    }
+
+    #[test]
+    fn sparkline_scales_to_max() {
+        let s = traffic_sparkline(&[0, 50, 100]);
+        assert_eq!(s.chars().count(), 3);
+        let chars: Vec<char> = s.chars().collect();
+        assert_eq!(chars[0], '▁');
+        assert_eq!(chars[2], '█');
+    }
+
+    #[test]
+    fn direction_arrow_states() {
+        assert_eq!(direction_arrow(false, false), "─x─");
+        assert_eq!(direction_arrow(true, false), "─▶─");
+        assert_eq!(direction_arrow(true, true), "━▶━");
+    }
+
+    #[test]
+    fn activity_dot_thresholds() {
+        assert_eq!(activity_dot(0), "·");
+        assert_eq!(activity_dot(50), "∘");
+        assert_eq!(activity_dot(10_000), "●");
     }
 }

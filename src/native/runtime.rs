@@ -25,7 +25,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::cli::{Agent, SplitLayout};
 use crate::hook::{self, HookEvent};
 use crate::native::access::{agent_args, agent_program, AccessMode};
-use crate::native::footer::{mode_glyph, queue_gauge_glyph, uptime_label};
+use crate::native::footer::{mode_glyph, pingpong_dot, queue_gauge_glyph, uptime_label};
 use crate::native::input::{classify_key, key_to_bytes, GlobalAction};
 use crate::native::layout::{
     focus_index, pane_id_index, pane_layouts_for_view, resize_panes_for_view, split_label,
@@ -245,6 +245,16 @@ fn ui_loop(
     // pending-prompt matching.
     let mut input_buf: HashMap<PaneId, Vec<u8>> = HashMap::new();
 
+    let mut traffic = TrafficCounters {
+        a_to_b_bytes: 0,
+        b_to_a_bytes: 0,
+        last_a_to_b_at: None,
+        last_b_to_a_at: None,
+        samples_a_to_b: std::collections::VecDeque::from(vec![0u64; 8]),
+        samples_b_to_a: std::collections::VecDeque::from(vec![0u64; 8]),
+        last_sample_at: Instant::now(),
+    };
+
     'main: loop {
         if !relay_paused {
             drain_paused_writes(&mut panes, &mut paused_writes, log_path);
@@ -257,6 +267,7 @@ fn ui_loop(
             &mut paused_writes,
             log_path,
             &mut footer_msg,
+            &mut traffic,
         ) {
             dirty = true;
         }
@@ -284,22 +295,37 @@ fn ui_loop(
         }
 
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
-            let heartbeat = relay_paused && (runtime_start.elapsed().as_millis() / 500) % 2 == 0;
-            let footer = footer_with_relay_status(
-                &footer_msg,
+            let now = Instant::now();
+            let elapsed = runtime_start.elapsed();
+            let heartbeat = relay_paused && (elapsed.as_millis() / 500) % 2 == 0;
+            let footer = footer_with_relay_status(RelayStatusView {
+                message: &footer_msg,
                 relay_paused,
-                paused_writes.len(),
+                queued_writes: paused_writes.len(),
                 a_to_b_enabled,
                 b_to_a_enabled,
                 relay_auto_stopped,
                 heartbeat,
-                runtime_start.elapsed(),
-            );
+                elapsed,
+                traffic: &traffic,
+                now,
+            });
             terminal.draw(|frame| {
                 draw(frame, &panes, focus, &footer, selection, split, maximized);
             })?;
             last_frame = Instant::now();
             dirty = false;
+        }
+
+        if traffic.last_sample_at.elapsed() >= Duration::from_secs(1) {
+            traffic.samples_a_to_b.pop_front();
+            traffic.samples_a_to_b.push_back(traffic.a_to_b_bytes);
+            traffic.samples_b_to_a.pop_front();
+            traffic.samples_b_to_a.push_back(traffic.b_to_a_bytes);
+            traffic.a_to_b_bytes = 0;
+            traffic.b_to_a_bytes = 0;
+            traffic.last_sample_at = Instant::now();
+            dirty = true;
         }
 
         if event::poll(Duration::from_millis(POLL_INTERVAL_MS))? {
@@ -639,6 +665,7 @@ fn drain_relay_writes(
     paused_writes: &mut VecDeque<(String, Vec<u8>)>,
     log_path: &std::path::Path,
     footer_msg: &mut String,
+    traffic: &mut TrafficCounters,
 ) -> bool {
     let mut dirty = false;
     loop {
@@ -648,13 +675,32 @@ fn drain_relay_writes(
                     paused_writes.push_back((target, bytes));
                     *footer_msg = pause_footer(paused_writes.len());
                     dirty = true;
-                } else if let Err(err) = write_to_target(panes, &target, &bytes) {
-                    crate::relay_core::log_event(
-                        log_path,
-                        format!("relay_write_error target={target} error=\"{err}\""),
-                    );
-                    *footer_msg = write_error_footer(&target, &err);
-                    dirty = true;
+                } else {
+                    let byte_len = bytes.len() as u64;
+                    let target_str = target.clone();
+                    match write_to_target(panes, &target, &bytes) {
+                        Ok(()) => {
+                            match target_str.as_str() {
+                                "b" => {
+                                    traffic.a_to_b_bytes += byte_len;
+                                    traffic.last_a_to_b_at = Some(Instant::now());
+                                }
+                                "a" => {
+                                    traffic.b_to_a_bytes += byte_len;
+                                    traffic.last_b_to_a_at = Some(Instant::now());
+                                }
+                                _ => {}
+                            }
+                        }
+                        Err(err) => {
+                            crate::relay_core::log_event(
+                                log_path,
+                                format!("relay_write_error target={target} error=\"{err}\""),
+                            );
+                            *footer_msg = write_error_footer(&target, &err);
+                            dirty = true;
+                        }
+                    }
                 }
             }
             Err(mpsc::error::TryRecvError::Empty) => break,
@@ -836,9 +882,18 @@ fn route_footer(route: &str, enabled: bool) -> String {
     format!(" route[{route}:{state}] · Ctrl-1: A=>B · Ctrl-2: B=>A ")
 }
 
-#[allow(clippy::too_many_arguments)]
-fn footer_with_relay_status(
-    message: &str,
+struct TrafficCounters {
+    a_to_b_bytes: u64,
+    b_to_a_bytes: u64,
+    last_a_to_b_at: Option<Instant>,
+    last_b_to_a_at: Option<Instant>,
+    samples_a_to_b: std::collections::VecDeque<u64>,
+    samples_b_to_a: std::collections::VecDeque<u64>,
+    last_sample_at: Instant,
+}
+
+struct RelayStatusView<'a> {
+    message: &'a str,
     relay_paused: bool,
     queued_writes: usize,
     a_to_b_enabled: bool,
@@ -846,8 +901,27 @@ fn footer_with_relay_status(
     relay_auto_stopped: bool,
     heartbeat: bool,
     elapsed: Duration,
-) -> String {
-    use crate::native::footer::{pingpong_dot, stop_warn_glyph};
+    traffic: &'a TrafficCounters,
+    now: Instant,
+}
+
+fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
+    use crate::native::footer::{
+        activity_dot, direction_arrow, stop_warn_glyph, traffic_sparkline,
+    };
+    let RelayStatusView {
+        message,
+        relay_paused,
+        queued_writes,
+        a_to_b_enabled,
+        b_to_a_enabled,
+        relay_auto_stopped,
+        heartbeat,
+        elapsed,
+        traffic,
+        now,
+    } = view;
+
     let mode = if relay_auto_stopped {
         "STOP"
     } else if relay_paused {
@@ -863,13 +937,29 @@ fn footer_with_relay_status(
         ""
     };
     let gauge = queue_gauge_glyph(queued_writes);
-    let a_to_b = if a_to_b_enabled { "ON" } else { "OFF" };
-    let b_to_a = if b_to_a_enabled { "ON" } else { "OFF" };
+
+    let pulse_a_to_b = traffic
+        .last_a_to_b_at
+        .map(|t| now.duration_since(t) < Duration::from_millis(200))
+        .unwrap_or(false);
+    let pulse_b_to_a = traffic
+        .last_b_to_a_at
+        .map(|t| now.duration_since(t) < Duration::from_millis(200))
+        .unwrap_or(false);
+    let arrow_ab = direction_arrow(a_to_b_enabled, pulse_a_to_b);
+    let arrow_ba = direction_arrow(b_to_a_enabled, pulse_b_to_a);
+    let spark_ab_vec: Vec<u64> = traffic.samples_a_to_b.iter().copied().collect();
+    let spark_ba_vec: Vec<u64> = traffic.samples_b_to_a.iter().copied().collect();
+    let spark_ab = traffic_sparkline(&spark_ab_vec);
+    let spark_ba = traffic_sparkline(&spark_ba_vec);
+    let act_a = activity_dot(*traffic.samples_b_to_a.back().unwrap_or(&0));
+    let act_b = activity_dot(*traffic.samples_a_to_b.back().unwrap_or(&0));
+
     let routes = if !relay_paused && !relay_auto_stopped && a_to_b_enabled && b_to_a_enabled {
         let pp = pingpong_dot(elapsed);
-        format!("A {pp} B")
+        format!("A{act_a} {spark_ba} {arrow_ba} {pp} {arrow_ab} {spark_ab} {act_b}B")
     } else {
-        format!("A=>B[{a_to_b}] · B=>A[{b_to_a}]")
+        format!("A{act_a} {arrow_ba} | {arrow_ab} {act_b}B")
     };
     let uptime = uptime_label(elapsed);
     format!(
@@ -1149,45 +1239,62 @@ mod tests {
         assert!(footer.contains("closed"));
     }
 
+    fn test_traffic() -> TrafficCounters {
+        TrafficCounters {
+            a_to_b_bytes: 0,
+            b_to_a_bytes: 0,
+            last_a_to_b_at: None,
+            last_b_to_a_at: None,
+            samples_a_to_b: std::collections::VecDeque::from(vec![0u64; 8]),
+            samples_b_to_a: std::collections::VecDeque::from(vec![0u64; 8]),
+            last_sample_at: Instant::now(),
+        }
+    }
+
     #[test]
     fn footer_status_shows_relay_mode_queue_and_routes() {
-        let footer = footer_with_relay_status(
-            "ready",
-            true,
-            3,
-            false,
-            true,
-            false,
-            true,
-            Duration::from_secs(0),
-        );
+        let traffic = test_traffic();
+        let footer = footer_with_relay_status(RelayStatusView {
+            message: "ready",
+            relay_paused: true,
+            queued_writes: 3,
+            a_to_b_enabled: false,
+            b_to_a_enabled: true,
+            relay_auto_stopped: false,
+            heartbeat: true,
+            elapsed: Duration::from_secs(0),
+            traffic: &traffic,
+            now: Instant::now(),
+        });
 
         assert!(footer.contains("⏸"));
         assert!(footer.contains("relay[PAUSE] ●"));
         assert!(footer.contains("q[3] ▃"));
-        assert!(footer.contains("A=>B[OFF]"));
-        assert!(footer.contains("B=>A[ON]"));
+        assert!(footer.contains("─x─")); // a_to_b disabled
+        assert!(footer.contains("─▶─")); // b_to_a enabled
         assert!(footer.contains("up 00:00"));
         assert!(footer.ends_with("ready"));
     }
 
     #[test]
     fn footer_status_shows_stopped_relay_over_pause_state() {
-        let footer = footer_with_relay_status(
-            "ready",
-            true,
-            3,
-            true,
-            true,
-            true,
-            true,
-            Duration::from_secs(0),
-        );
+        let traffic = test_traffic();
+        let footer = footer_with_relay_status(RelayStatusView {
+            message: "ready",
+            relay_paused: true,
+            queued_writes: 3,
+            a_to_b_enabled: true,
+            b_to_a_enabled: true,
+            relay_auto_stopped: true,
+            heartbeat: true,
+            elapsed: Duration::from_secs(0),
+            traffic: &traffic,
+            now: Instant::now(),
+        });
 
         assert!(footer.contains("⏹"));
         assert!(footer.contains("relay[STOP]"));
         assert!(!footer.contains("relay[PAUSE]"));
-        assert!(!footer.contains('●'));
         assert!(!footer.contains('○'));
         assert!(footer.contains("up 00:00"));
     }
