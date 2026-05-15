@@ -23,14 +23,22 @@ struct HookResponse {
     ok: bool,
 }
 
+#[derive(Clone)]
+struct HookState {
+    relay_tx: mpsc::Sender<HookEvent>,
+    ping_tx: Option<mpsc::Sender<()>>,
+}
+
 pub async fn run_hook_server_on_listener(
     listener: TcpListener,
     mut shutdown: broadcast::Receiver<()>,
     relay_tx: mpsc::Sender<HookEvent>,
+    ping_tx: Option<mpsc::Sender<()>>,
 ) {
+    let state = HookState { relay_tx, ping_tx };
     let app = Router::new()
         .route("/hook", post(handle_hook))
-        .with_state(relay_tx);
+        .with_state(state);
 
     let addr = listener
         .local_addr()
@@ -48,7 +56,7 @@ pub async fn run_hook_server_on_listener(
 }
 
 async fn handle_hook(
-    State(relay_tx): State<mpsc::Sender<HookEvent>>,
+    State(state): State<HookState>,
     body: Result<Json<HookPayload>, axum::extract::rejection::JsonRejection>,
 ) -> (StatusCode, Json<HookResponse>) {
     let payload = match body {
@@ -67,8 +75,13 @@ async fn handle_hook(
         transcript_path: payload.transcript_path.filter(|path| !path.is_empty()),
     };
 
-    if relay_tx.try_send(event).is_err() {
+    if state.relay_tx.try_send(event).is_err() {
         return (StatusCode::OK, Json(HookResponse { ok: false }));
+    }
+
+    // Best-effort ping — never blocks.
+    if let Some(ref ping_tx) = state.ping_tx {
+        let _ = ping_tx.try_send(());
     }
 
     (StatusCode::OK, Json(HookResponse { ok: true }))
@@ -86,9 +99,10 @@ mod tests {
 
     fn make_app() -> (Router, mpsc::Receiver<HookEvent>) {
         let (tx, rx) = mpsc::channel::<HookEvent>(16);
+        let state = HookState { relay_tx: tx, ping_tx: None };
         let app = Router::new()
             .route("/hook", post(handle_hook))
-            .with_state(tx);
+            .with_state(state);
         (app, rx)
     }
 
@@ -227,7 +241,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<HookEvent>(16);
         let app = Router::new()
             .route("/hook", post(handle_hook))
-            .with_state(tx);
+            .with_state(HookState { relay_tx: tx, ping_tx: None });
 
         let response = app
             .oneshot(
@@ -293,7 +307,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let app = Router::new()
             .route("/hook", post(handle_hook))
-            .with_state(relay_tx);
+            .with_state(HookState { relay_tx, ping_tx: None });
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -347,7 +361,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let server = tokio::spawn(async move {
-            run_hook_server_on_listener(listener, shutdown_rx, relay_tx).await;
+            run_hook_server_on_listener(listener, shutdown_rx, relay_tx, None).await;
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -395,7 +409,7 @@ mod tests {
         .unwrap();
         let app = Router::new()
             .route("/hook", post(handle_hook))
-            .with_state(tx);
+            .with_state(HookState { relay_tx: tx, ping_tx: None });
 
         let response = tokio::time::timeout(
             std::time::Duration::from_millis(100),

@@ -69,6 +69,7 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
         .context("read hook listener address")?
         .port();
     let (hook_tx, hook_rx) = mpsc::channel::<HookEvent>(64);
+    let (hook_ping_tx, hook_ping_rx) = mpsc::channel::<()>(64);
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let (input_tx, input_rx) = mpsc::channel::<(String, String)>(64);
     let (write_tx, write_rx) = mpsc::channel::<(String, Vec<u8>)>(64);
@@ -83,7 +84,7 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
     tokio::spawn({
         let shutdown_rx = shutdown_tx.subscribe();
         async move {
-            hook::run_hook_server_on_listener(hook_listener, shutdown_rx, hook_tx).await;
+            hook::run_hook_server_on_listener(hook_listener, shutdown_rx, hook_tx, Some(hook_ping_tx)).await;
         }
     });
 
@@ -115,6 +116,7 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
         control_tx,
         write_rx,
         status_rx,
+        hook_ping_rx,
     };
     let join =
         tokio::task::spawn_blocking(move || run_blocking(opts, cwd, hook_port, log_path, channels));
@@ -185,6 +187,7 @@ fn ui_loop(
         control_tx,
         mut write_rx,
         mut status_rx,
+        mut hook_ping_rx,
     } = channels;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -226,11 +229,11 @@ fn ui_loop(
     let mut last_frame = Instant::now() - Duration::from_secs(1);
     let runtime_start = Instant::now();
     let mut dirty = true;
+    let mut last_hook_at: Option<Instant> = None;
     let mut footer_msg = format!(
-        " hook:{}  · Ctrl-Y: broadcast  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
+        " hook:{} ·  · Ctrl-Y: broadcast  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
         hook_port,
     );
-    let default_footer_msg = footer_msg.clone();
     let mut error_set_at: Option<Instant> = None;
     let mut error_raw_msg: String = String::new();
     let mut selection: Option<MouseSelection> = None;
@@ -258,6 +261,18 @@ fn ui_loop(
     };
 
     'main: loop {
+        // Drain hook pings — non-blocking, lossy.
+        while hook_ping_rx.try_recv().is_ok() {
+            last_hook_at = Some(Instant::now());
+            dirty = true;
+        }
+
+        let dot = crate::native::footer::hook_ping_glyph(last_hook_at.map(|t| t.elapsed()));
+        let default_footer_msg = format!(
+            " hook:{}{dot}  · Ctrl-Y: broadcast  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
+            hook_port,
+        );
+
         if !relay_paused {
             drain_paused_writes(&mut panes, &mut paused_writes, log_path);
         }
@@ -294,7 +309,8 @@ fn ui_loop(
             || relay_auto_stopped
             || broadcast_input.is_some()
             || (a_to_b_enabled && b_to_a_enabled)
-            || error_set_at.is_some();
+            || error_set_at.is_some()
+            || last_hook_at.is_some();
         if needs_tick && !dirty && last_frame.elapsed() >= Duration::from_millis(250) {
             dirty = true;
         }
@@ -682,6 +698,7 @@ struct RuntimeChannels {
     control_tx: mpsc::Sender<relay::RelayControl>,
     write_rx: mpsc::Receiver<(String, Vec<u8>)>,
     status_rx: mpsc::Receiver<relay::RelayStatus>,
+    hook_ping_rx: mpsc::Receiver<()>,
 }
 
 fn drain_paused_writes(

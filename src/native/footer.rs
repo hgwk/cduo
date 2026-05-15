@@ -100,6 +100,14 @@ pub(crate) fn activity_dot(bytes_last_sec: u64) -> &'static str {
     }
 }
 
+pub(crate) fn hook_ping_glyph(since_last: Option<Duration>) -> &'static str {
+    match since_last {
+        Some(d) if d < Duration::from_millis(400) => "·",
+        Some(d) if d < Duration::from_secs(10) => " ",
+        _ => "?",
+    }
+}
+
 pub(crate) fn error_toast_fade(msg: &str, elapsed: Duration) -> Option<String> {
     let ms = elapsed.as_millis();
     if ms >= 4_000 {
@@ -201,6 +209,14 @@ mod tests {
         assert_eq!(activity_dot(0), "·");
         assert_eq!(activity_dot(50), "∘");
         assert_eq!(activity_dot(10_000), "●");
+    }
+
+    #[test]
+    fn hook_ping_glyph_phases() {
+        assert_eq!(hook_ping_glyph(None), "?");
+        assert_eq!(hook_ping_glyph(Some(Duration::from_millis(100))), "·");
+        assert_eq!(hook_ping_glyph(Some(Duration::from_secs(3))), " ");
+        assert_eq!(hook_ping_glyph(Some(Duration::from_secs(60))), "?");
     }
 
     #[test]
