@@ -231,6 +231,8 @@ fn ui_loop(
         hook_port,
     );
     let default_footer_msg = footer_msg.clone();
+    let mut error_set_at: Option<Instant> = None;
+    let mut error_raw_msg: String = String::new();
     let mut selection: Option<MouseSelection> = None;
     let mut relay_paused = false;
     let mut paused_writes: VecDeque<(String, Vec<u8>)> = VecDeque::new();
@@ -267,6 +269,8 @@ fn ui_loop(
             &mut paused_writes,
             log_path,
             &mut footer_msg,
+            &mut error_set_at,
+            &mut error_raw_msg,
             &mut traffic,
         ) {
             dirty = true;
@@ -289,7 +293,8 @@ fn ui_loop(
         let needs_tick = relay_paused
             || relay_auto_stopped
             || broadcast_input.is_some()
-            || (a_to_b_enabled && b_to_a_enabled);
+            || (a_to_b_enabled && b_to_a_enabled)
+            || error_set_at.is_some();
         if needs_tick && !dirty && last_frame.elapsed() >= Duration::from_millis(250) {
             dirty = true;
         }
@@ -297,6 +302,16 @@ fn ui_loop(
         if dirty && last_frame.elapsed() >= Duration::from_millis(FRAME_BUDGET_MS) {
             let now = Instant::now();
             let elapsed = runtime_start.elapsed();
+
+            if let Some(at) = error_set_at {
+                match crate::native::footer::error_toast_fade(&error_raw_msg, at.elapsed()) {
+                    Some(faded) => footer_msg = faded,
+                    None => {
+                        footer_msg = default_footer_msg.clone();
+                        error_set_at = None;
+                    }
+                }
+            }
             let heartbeat = relay_paused && (elapsed.as_millis() / 500) % 2 == 0;
             let footer = footer_with_relay_status(RelayStatusView {
                 message: &footer_msg,
@@ -341,10 +356,12 @@ fn ui_loop(
                         match handle_broadcast_key(key, buffer) {
                             BroadcastInputAction::Editing => {
                                 footer_msg = broadcast_input_footer(buffer, runtime_start.elapsed());
+                                error_set_at = None;
                             }
                             BroadcastInputAction::Cancel => {
                                 broadcast_input = None;
                                 footer_msg = default_footer_msg.clone();
+                                error_set_at = None;
                             }
                             BroadcastInputAction::Submit(prompt) => {
                                 broadcast_input = None;
@@ -354,6 +371,8 @@ fn ui_loop(
                                     &mut input_buf,
                                     &input_tx,
                                     &mut footer_msg,
+                                    &mut error_set_at,
+                                    &mut error_raw_msg,
                                 );
                                 relay_paused = true;
                             }
@@ -400,6 +419,7 @@ fn ui_loop(
                             } else {
                                 default_footer_msg.clone()
                             };
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::ToggleSplit => {
@@ -414,6 +434,7 @@ fn ui_loop(
                             );
                             footer_msg =
                                 format!(" split: {} · Ctrl-L: toggle split ", split_label(split));
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::ManualRelay => {
@@ -430,12 +451,14 @@ fn ui_loop(
                                     )
                                 },
                             );
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::ClearRelayQueue => {
                             let cleared = clear_paused_writes(&mut paused_writes);
                             footer_msg =
                                 format!(" relay queue cleared · dropped writes: {cleared} ");
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::ToggleRelayAToB => {
@@ -449,6 +472,7 @@ fn ui_loop(
                                 },
                                 || route_footer("A→B", a_to_b_enabled),
                             );
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::ToggleRelayBToA => {
@@ -462,10 +486,12 @@ fn ui_loop(
                                 },
                                 || route_footer("B→A", b_to_a_enabled),
                             );
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::ShowRelayLog => {
                             footer_msg = recent_log_footer(log_path);
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::ToggleFocusLayout => {
@@ -492,11 +518,13 @@ fn ui_loop(
                                     " layout restored · Ctrl-Z: maximize focused pane ".to_string()
                                 }
                             };
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::BroadcastInput => {
                             broadcast_input = Some(String::new());
                             footer_msg = broadcast_input_footer("", runtime_start.elapsed());
+                            error_set_at = None;
                             dirty = true;
                         }
                         GlobalAction::ScrollUp => {
@@ -512,6 +540,8 @@ fn ui_loop(
                                 let idx = focus_index(focus);
                                 if let Err(err) = panes[idx].write(&bytes) {
                                     footer_msg = write_error_footer(focus.0.label(), &err);
+                                    error_raw_msg = footer_msg.clone();
+                                    error_set_at = Some(Instant::now());
                                 }
                                 capture_line(focus.0, &bytes, &mut input_buf, &input_tx);
                             }
@@ -540,6 +570,7 @@ fn ui_loop(
                                     end_col: col,
                                 });
                                 footer_msg = default_footer_msg.clone();
+                                error_set_at = None;
                                 dirty = true;
                             }
                         }
@@ -569,6 +600,7 @@ fn ui_loop(
                                         text.chars().count(),
                                         active.pane.label().to_uppercase()
                                     );
+                                    error_set_at = None;
                                 }
                                 dirty = true;
                             }
@@ -584,7 +616,11 @@ fn ui_loop(
                                     row,
                                     col,
                                     &mut footer_msg,
+                                    &mut error_set_at,
                                 );
+                                if error_set_at.is_some() {
+                                    error_raw_msg = footer_msg.clone();
+                                }
                             } else {
                                 let pane =
                                     mouse_pane(mouse.column, mouse.row, layouts).unwrap_or(focus.0);
@@ -603,7 +639,11 @@ fn ui_loop(
                                     row,
                                     col,
                                     &mut footer_msg,
+                                    &mut error_set_at,
                                 );
+                                if error_set_at.is_some() {
+                                    error_raw_msg = footer_msg.clone();
+                                }
                             } else {
                                 let pane =
                                     mouse_pane(mouse.column, mouse.row, layouts).unwrap_or(focus.0);
@@ -625,6 +665,7 @@ fn ui_loop(
                     " pane {} exited · Ctrl-Q to leave ",
                     pane.id.label().to_uppercase()
                 );
+                error_set_at = None;
                 dirty = true;
             }
         }
@@ -658,6 +699,7 @@ fn drain_paused_writes(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drain_relay_writes(
     panes: &mut [Pane; 2],
     write_rx: &mut mpsc::Receiver<(String, Vec<u8>)>,
@@ -665,6 +707,8 @@ fn drain_relay_writes(
     paused_writes: &mut VecDeque<(String, Vec<u8>)>,
     log_path: &std::path::Path,
     footer_msg: &mut String,
+    error_set_at: &mut Option<Instant>,
+    error_raw_msg: &mut String,
     traffic: &mut TrafficCounters,
 ) -> bool {
     let mut dirty = false;
@@ -674,6 +718,7 @@ fn drain_relay_writes(
                 if relay_paused {
                     paused_writes.push_back((target, bytes));
                     *footer_msg = pause_footer(paused_writes.len());
+                    *error_set_at = None;
                     dirty = true;
                 } else {
                     let byte_len = bytes.len() as u64;
@@ -698,6 +743,8 @@ fn drain_relay_writes(
                                 format!("relay_write_error target={target} error=\"{err}\""),
                             );
                             *footer_msg = write_error_footer(&target, &err);
+                            *error_raw_msg = footer_msg.clone();
+                            *error_set_at = Some(Instant::now());
                             dirty = true;
                         }
                     }
@@ -746,12 +793,14 @@ fn handle_mouse_wheel(
     row: u16,
     col: u16,
     footer_msg: &mut String,
+    error_set_at: &mut Option<Instant>,
 ) {
     let idx = pane_id_index(pane);
     if panes[idx].agent == "codex" {
         if let Some(bytes) = mouse_wheel_bytes(kind, row, col) {
             if let Err(err) = panes[idx].write(&bytes) {
                 *footer_msg = write_error_footer(pane.label(), &err);
+                *error_set_at = Some(Instant::now());
             }
         }
         return;
@@ -822,6 +871,8 @@ fn send_broadcast_prompt(
     input_buf: &mut HashMap<PaneId, Vec<u8>>,
     input_tx: &mpsc::Sender<(String, String)>,
     footer_msg: &mut String,
+    error_set_at: &mut Option<Instant>,
+    error_raw_msg: &mut String,
 ) {
     let bytes = broadcast_prompt_bytes(prompt);
     let mut sent = 0;
@@ -834,12 +885,15 @@ fn send_broadcast_prompt(
             }
             Err(err) => {
                 *footer_msg = write_error_footer(pane.label(), &err);
+                *error_raw_msg = footer_msg.clone();
+                *error_set_at = Some(Instant::now());
                 return;
             }
         }
     }
 
     *footer_msg = format!(" broadcast sent to {sent} panes · relay paused · Ctrl-P: resume relay ");
+    *error_set_at = None;
 }
 
 fn broadcast_input_footer(buffer: &str, elapsed: Duration) -> String {

@@ -100,6 +100,20 @@ pub(crate) fn activity_dot(bytes_last_sec: u64) -> &'static str {
     }
 }
 
+pub(crate) fn error_toast_fade(msg: &str, elapsed: Duration) -> Option<String> {
+    let ms = elapsed.as_millis();
+    if ms >= 4_000 {
+        return None;
+    }
+    let glyph = match ms {
+        0..=999 => '█',
+        1_000..=1_999 => '▓',
+        2_000..=2_999 => '▒',
+        _ => '░',
+    };
+    Some(format!("{glyph} {msg}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +201,14 @@ mod tests {
         assert_eq!(activity_dot(0), "·");
         assert_eq!(activity_dot(50), "∘");
         assert_eq!(activity_dot(10_000), "●");
+    }
+
+    #[test]
+    fn error_toast_fades_then_expires() {
+        let m = "boom";
+        assert!(error_toast_fade(m, Duration::from_millis(0)).unwrap().starts_with('█'));
+        assert!(error_toast_fade(m, Duration::from_millis(1500)).unwrap().starts_with('▓'));
+        assert!(error_toast_fade(m, Duration::from_millis(3500)).unwrap().starts_with('░'));
+        assert!(error_toast_fade(m, Duration::from_millis(4500)).is_none());
     }
 }
