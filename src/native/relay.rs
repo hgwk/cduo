@@ -40,6 +40,7 @@ pub enum RelayControl {
         enabled: bool,
     },
     SetPrefix(Option<String>),
+    ResetStop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +264,11 @@ async fn handle_relay_control(
                 ),
             );
         }
+        RelayControl::ResetStop => {
+            state.controls.reset_stop();
+            state.bus.clear_dedup();
+            log_event(log_path, "relay_reset_stop");
+        }
     }
 }
 
@@ -402,16 +408,48 @@ async fn deliver_via_channel(
     pending_prompts: &mut HashMap<String, String>,
 ) {
     while let Ok(msg) = rx_a.try_recv() {
-        log_deliver(log_path, "a", &msg.content);
-        pending_prompts.insert("a".to_string(), normalize_prompt_text(&msg.content));
+        let content = prefixed_agent_content(&msg.source_node_id, &msg.content, pane_agents);
+        log_deliver(log_path, "a", &content);
+        pending_prompts.insert("a".to_string(), normalize_prompt_text(&content));
         let agent = pane_agents.get("a").map(String::as_str).unwrap_or("claude");
-        send_relay_via_channel(write_tx, "a", &msg.content, agent).await;
+        send_relay_via_channel(write_tx, "a", &content, agent).await;
     }
     while let Ok(msg) = rx_b.try_recv() {
-        log_deliver(log_path, "b", &msg.content);
-        pending_prompts.insert("b".to_string(), normalize_prompt_text(&msg.content));
+        let content = prefixed_agent_content(&msg.source_node_id, &msg.content, pane_agents);
+        log_deliver(log_path, "b", &content);
+        pending_prompts.insert("b".to_string(), normalize_prompt_text(&content));
         let agent = pane_agents.get("b").map(String::as_str).unwrap_or("claude");
-        send_relay_via_channel(write_tx, "b", &msg.content, agent).await;
+        send_relay_via_channel(write_tx, "b", &content, agent).await;
+    }
+}
+
+fn prefixed_agent_content(
+    source: &str,
+    content: &str,
+    pane_agents: &HashMap<String, String>,
+) -> String {
+    format!(
+        "Other {} says: {content}",
+        agent_display_name(
+            pane_agents
+                .get(source)
+                .map(String::as_str)
+                .unwrap_or(source)
+        )
+    )
+}
+
+fn agent_display_name(agent: &str) -> String {
+    match agent {
+        "claude" => "Claude".to_string(),
+        "codex" => "Codex".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => "Agent".to_string(),
+            }
+        }
     }
 }
 
@@ -501,7 +539,11 @@ async fn manual_relay(pane_id: &str, ctx: ManualRelayContext<'_>) {
         return;
     }
 
-    let content = ctx.controls.delivered_content(&output.output);
+    let content = ctx.controls.delivered_content(&prefixed_agent_content(
+        pane_id,
+        &output.output,
+        ctx.pane_agents,
+    ));
     ctx.pending_prompts
         .insert(target.to_string(), normalize_prompt_text(&content));
     let target_agent = ctx
@@ -577,6 +619,7 @@ struct RelayControlState {
     max_auto_relays: Option<usize>,
     stop_token: String,
     auto_relay_count: usize,
+    last_auto_content: Option<(String, String)>,
     stopped: bool,
 }
 
@@ -589,6 +632,7 @@ impl Default for RelayControlState {
             max_auto_relays: None,
             stop_token: DEFAULT_STOP_TOKEN.to_string(),
             auto_relay_count: 0,
+            last_auto_content: None,
             stopped: false,
         }
     }
@@ -653,6 +697,28 @@ impl RelayControlState {
         self.stopped = true;
     }
 
+    fn reset_stop(&mut self) {
+        self.stopped = false;
+        self.auto_relay_count = 0;
+        self.last_auto_content = None;
+    }
+
+    fn should_stop_for_duplicate(&self, source: &str, content: &str) -> bool {
+        let key = duplicate_content_key(content);
+        !key.is_empty()
+            && self
+                .last_auto_content
+                .as_ref()
+                .is_some_and(|(last_source, last_key)| last_source != source && last_key == &key)
+    }
+
+    fn record_auto_content(&mut self, source: &str, content: &str) {
+        let key = duplicate_content_key(content);
+        if !key.is_empty() {
+            self.last_auto_content = Some((source.to_string(), key));
+        }
+    }
+
     fn can_publish_auto(&mut self) -> bool {
         if self.stopped {
             return false;
@@ -670,6 +736,10 @@ impl RelayControlState {
     fn record_auto_publish(&mut self) {
         self.auto_relay_count += 1;
     }
+}
+
+fn duplicate_content_key(content: &str) -> String {
+    normalize_prompt_text(content).trim().to_string()
 }
 
 fn publish_transcript_output_with_controls(
@@ -693,6 +763,18 @@ fn publish_transcript_output_with_controls(
         return false;
     }
     if should_suppress_transcript_output(&output.output) {
+        return false;
+    }
+    if controls.should_stop_for_duplicate(pane_id, &output.output) {
+        controls.stop();
+        log_event(
+            log_path,
+            format!(
+                "relay_duplicate_loop source={pane_id} len={} text=\"{}\"",
+                output.output.len(),
+                preview(&output.output)
+            ),
+        );
         return false;
     }
     if !controls.can_publish_auto() {
@@ -726,6 +808,7 @@ fn publish_transcript_output_with_controls(
     let publish_result = bus.publish(relay_msg);
     if publish_result == PublishResult::Delivered {
         controls.record_auto_publish();
+        controls.record_auto_content(&source, &output.output);
     }
     log_event(
         log_path,
@@ -872,6 +955,34 @@ mod tests {
         assert!(
             writes.iter().any(|(_, b)| b == b"\r"),
             "expected trailing Enter byte"
+        );
+    }
+
+    fn assert_paste_write_contains(
+        writes: &[(String, Vec<u8>)],
+        expected_target: &str,
+        expected: &str,
+    ) {
+        assert!(
+            !writes.is_empty(),
+            "expected relay to forward something, got nothing"
+        );
+        for (target, _) in writes {
+            assert_eq!(
+                target, expected_target,
+                "relay should target pane {expected_target}, got target {target}"
+            );
+        }
+        let body = writes
+            .iter()
+            .find_map(|(_, bytes)| {
+                let s = String::from_utf8_lossy(bytes);
+                s.contains("\x1b[200~").then_some(s.to_string())
+            })
+            .expect("expected at least one bracketed-paste bundle");
+        assert!(
+            body.contains(expected),
+            "paste body missing expected content: {body:?}"
         );
     }
 
@@ -1122,11 +1233,71 @@ mod tests {
 
         assert_eq!(
             pending_prompts.get("b").map(String::as_str),
-            Some(answer),
+            Some("Other Claude says: MANUAL_CLAUDE_TO_CODEX_PROMPT"),
             "manual relay should prime Codex transcript binding for the target pane"
         );
         let writes = collect_writes(&mut write_rx, Duration::from_secs(1)).await;
-        assert_relay_writes(&writes, "b", answer);
+        assert_relay_writes(
+            &writes,
+            "b",
+            "Other Claude says: MANUAL_CLAUDE_TO_CODEX_PROMPT",
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_delivery_prefixes_source_agent_name_in_both_directions() {
+        let temp = tempdir().unwrap();
+        let log_path = temp.path().join("relay.log");
+        let pane_agents = HashMap::from([
+            ("a".to_string(), "claude".to_string()),
+            ("b".to_string(), "codex".to_string()),
+        ]);
+        let mut bus = MessageBus::new();
+        let mut rx_a = bus.subscribe("a");
+        let mut rx_b = bus.subscribe("b");
+        let (write_tx, mut write_rx) = mpsc::channel::<(String, Vec<u8>)>(8);
+        let mut pending_prompts = HashMap::new();
+
+        assert_eq!(
+            bus.publish(Message::new_relay("a", "b", "FROM_CLAUDE")),
+            PublishResult::Delivered
+        );
+        assert_eq!(
+            bus.publish(Message::new_relay("b", "a", "FROM_CODEX")),
+            PublishResult::Delivered
+        );
+
+        deliver_via_channel(
+            &log_path,
+            &mut rx_a,
+            &mut rx_b,
+            &write_tx,
+            &pane_agents,
+            &mut pending_prompts,
+        )
+        .await;
+
+        let writes = collect_writes(&mut write_rx, Duration::from_secs(1)).await;
+        let writes_a: Vec<(String, Vec<u8>)> = writes
+            .iter()
+            .filter(|(target, _)| target == "a")
+            .cloned()
+            .collect();
+        let writes_b: Vec<(String, Vec<u8>)> = writes
+            .iter()
+            .filter(|(target, _)| target == "b")
+            .cloned()
+            .collect();
+        assert_paste_write_contains(&writes_a, "a", "Other Codex says: FROM_CODEX");
+        assert_paste_write_contains(&writes_b, "b", "Other Claude says: FROM_CLAUDE");
+        assert_eq!(
+            pending_prompts.get("a").map(String::as_str),
+            Some("Other Codex says: FROM_CODEX")
+        );
+        assert_eq!(
+            pending_prompts.get("b").map(String::as_str),
+            Some("Other Claude says: FROM_CLAUDE")
+        );
     }
 
     #[tokio::test]
@@ -1356,6 +1527,50 @@ mod tests {
     }
 
     #[test]
+    fn reset_stop_reenables_auto_relay_after_duplicate_stop() {
+        let temp = tempdir().unwrap();
+        let router = PairRouter::new("a", "b");
+        let mut bus = MessageBus::new();
+        let mut rx_b = bus.subscribe("b");
+        let mut controls = RelayControlState::default();
+        let repeated = transcript_output("DUPLICATE_RELAY_BODY");
+
+        assert!(publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &repeated,
+            &mut controls,
+        ));
+        assert!(rx_b.try_recv().is_ok());
+
+        assert!(!publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "b",
+            &repeated,
+            &mut controls,
+        ));
+        assert!(controls.stopped);
+
+        controls.reset_stop();
+        bus.clear_dedup();
+
+        assert!(publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &repeated,
+            &mut controls,
+        ));
+        assert!(rx_b.try_recv().is_ok());
+        assert!(!controls.stopped);
+    }
+
+    #[test]
     fn max_relay_turns_blocks_auto_ping_pong_after_limit() {
         let temp = tempdir().unwrap();
         let router = PairRouter::new("a", "b");
@@ -1385,6 +1600,91 @@ mod tests {
             &mut controls,
         ));
         assert!(rx_b.try_recv().is_err());
+    }
+
+    #[test]
+    fn duplicate_auto_output_stops_ping_pong_after_first_delivery() {
+        let temp = tempdir().unwrap();
+        let router = PairRouter::new("a", "b");
+        let mut bus = MessageBus::new();
+        let mut rx_a = bus.subscribe("a");
+        let mut rx_b = bus.subscribe("b");
+        let mut controls = RelayControlState::default();
+        let repeated_output = "REPEATED_STATUS_OUTPUT";
+
+        assert!(publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &transcript_output(repeated_output),
+            &mut controls,
+        ));
+        assert_eq!(rx_b.try_recv().unwrap().content, repeated_output);
+
+        assert!(!publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "b",
+            &transcript_output(repeated_output),
+            &mut controls,
+        ));
+        assert!(rx_a.try_recv().is_err());
+        assert!(controls.stopped);
+
+        assert!(!publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &transcript_output("NEXT_OUTPUT_SHOULD_NOT_RELAY"),
+            &mut controls,
+        ));
+        assert!(rx_b.try_recv().is_err());
+    }
+
+    #[test]
+    fn duplicate_auto_output_from_same_source_does_not_stop_relay() {
+        let temp = tempdir().unwrap();
+        let router = PairRouter::new("a", "b");
+        let mut bus = MessageBus::new();
+        let mut rx_b = bus.subscribe("b");
+        let mut controls = RelayControlState::default();
+        let repeated_output = "REPEATED_VALID_OUTPUT";
+
+        assert!(publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &transcript_output(repeated_output),
+            &mut controls,
+        ));
+        assert_eq!(rx_b.try_recv().unwrap().content, repeated_output);
+
+        assert!(
+            !publish_transcript_output_with_controls(
+                &mut bus,
+                &router,
+                &temp.path().join("relay.log"),
+                "a",
+                &transcript_output(repeated_output),
+                &mut controls,
+            ),
+            "message bus may deduplicate the same route, but relay should stay active"
+        );
+        assert!(!controls.stopped);
+
+        assert!(publish_transcript_output_with_controls(
+            &mut bus,
+            &router,
+            &temp.path().join("relay.log"),
+            "a",
+            &transcript_output("NEXT_OUTPUT_SHOULD_RELAY"),
+            &mut controls,
+        ));
+        assert_eq!(rx_b.try_recv().unwrap().content, "NEXT_OUTPUT_SHOULD_RELAY");
     }
 
     #[tokio::test]

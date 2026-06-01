@@ -363,6 +363,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn template_stop_hook_active_exits_without_posting() {
+        let (relay_tx, mut rx) = mpsc::channel::<HookEvent>(8);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new()
+            .route("/hook", post(handle_hook))
+            .with_state(HookState {
+                relay_tx,
+                ping_tx: None,
+            });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let template: serde_json::Value =
+            serde_json::from_str(include_str!("../templates/claude-settings.json")).unwrap();
+        let command = template["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let status = tokio::task::spawn_blocking(move || {
+            let mut child = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .env("ORCHESTRATION_PORT", port.to_string())
+                .env("TERMINAL_ID", "b")
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            stdin
+                .write_all(br#"{"stop_hook_active":true,"transcript_path":"/tmp/skipped.jsonl"}"#)
+                .unwrap();
+            drop(stdin);
+            child.wait().unwrap()
+        })
+        .await
+        .unwrap();
+
+        assert!(status.success());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), rx.recv())
+                .await
+                .is_err(),
+            "active stop hook should not post another cduo hook event"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn bound_hook_server_accepts_requests_without_rebinding() {
         let (relay_tx, mut rx) = mpsc::channel::<HookEvent>(8);
         let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);

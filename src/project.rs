@@ -303,6 +303,7 @@ fn strip_leading_cduo_separator(content: &str) -> String {
 
 pub fn doctor() -> Result<()> {
     let mut failed = false;
+    let cwd = std::env::current_dir()?;
 
     println!("cduo doctor");
 
@@ -338,12 +339,102 @@ pub fn doctor() -> Result<()> {
         codex.as_deref().unwrap_or("not found (optional)")
     );
 
+    println!(
+        "{}",
+        claude_startup_hooks_report(&claude_settings_candidates(&cwd))
+    );
+
     if failed {
         bail!("Some checks failed. See above.");
     }
 
     println!("\n✅ cduo is ready.");
     Ok(())
+}
+
+fn claude_settings_candidates(cwd: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![cwd.join(".claude").join("settings.local.json")];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_claude = PathBuf::from(home).join(".claude");
+        paths.push(home_claude.join("settings.json"));
+        paths.push(home_claude.join("settings.local.json"));
+    }
+    paths
+}
+
+fn claude_startup_hooks_report(paths: &[PathBuf]) -> String {
+    let mut found = Vec::new();
+    let mut invalid = Vec::new();
+    for path in paths {
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+            invalid.push(display_path(path));
+            continue;
+        };
+        let count = count_hook_commands(&settings, "SessionStart");
+        if count > 0 {
+            found.push(format!("{} ({count})", display_path(path)));
+        }
+    }
+
+    let hooks = if found.is_empty() {
+        "! Claude startup hooks: none found in checked settings".to_string()
+    } else {
+        format!(
+            "! Claude startup hooks: found {} command(s) in {}",
+            found
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .rsplit_once('(')
+                        .and_then(|(_, count)| count.trim_end_matches(')').parse::<usize>().ok())
+                })
+                .sum::<usize>(),
+            found.join(", ")
+        )
+    };
+    if invalid.is_empty() {
+        hooks
+    } else {
+        format!("{hooks}; invalid JSON in {}", invalid.join(", "))
+    }
+}
+
+fn count_hook_commands(settings: &serde_json::Value, hook_name: &str) -> usize {
+    settings
+        .get("hooks")
+        .and_then(|hooks| hooks.get(hook_name))
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("hooks").and_then(serde_json::Value::as_array))
+                .map(|hooks| {
+                    hooks
+                        .iter()
+                        .filter(|hook| {
+                            hook.get("type").and_then(serde_json::Value::as_str) == Some("command")
+                                && hook
+                                    .get("command")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|command| !command.trim().is_empty())
+                        })
+                        .count()
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+fn display_path(path: &Path) -> String {
+    let Ok(cwd) = std::env::current_dir() else {
+        return path.display().to_string();
+    };
+    path.strip_prefix(&cwd)
+        .map(|relative| relative.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
 }
 
 pub fn backup() -> Result<()> {
@@ -683,6 +774,75 @@ mod tests {
 
         assert!(remove_cduo_stop_hooks_from_settings(&mut settings));
         assert!(settings.get("hooks").is_none());
+    }
+
+    #[test]
+    fn counts_only_session_start_command_hooks() {
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": "startup",
+                        "hooks": [
+                            {"type": "command", "command": "claude-mem"},
+                            {"type": "command", "command": "  "},
+                            {"type": "other", "command": "ignored"}
+                        ]
+                    }
+                ],
+                "Stop": [
+                    {
+                        "matcher": ".*",
+                        "hooks": [
+                            {"type": "command", "command": "cduo stop"}
+                        ]
+                    }
+                ]
+            }
+        });
+
+        assert_eq!(count_hook_commands(&settings, "SessionStart"), 1);
+        assert_eq!(count_hook_commands(&settings, "Stop"), 1);
+    }
+
+    #[test]
+    fn startup_hook_report_identifies_project_settings() {
+        let _guard = env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let settings_path = tmp.path().join(".claude").join("settings.local.json");
+        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        fs::write(
+            &settings_path,
+            serde_json::json!({
+                "hooks": {
+                    "SessionStart": [{
+                        "matcher": "startup",
+                        "hooks": [{"type": "command", "command": "claude-mem"}]
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let report = claude_startup_hooks_report(&[settings_path]);
+
+        assert!(report.contains("Claude startup hooks: found 1 command(s)"));
+        assert!(report.contains("settings.local.json"));
+    }
+
+    #[test]
+    fn startup_hook_report_separates_invalid_json_from_hook_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings_path = tmp.path().join(".claude").join("settings.local.json");
+        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        fs::write(&settings_path, "{not json").unwrap();
+
+        let report = claude_startup_hooks_report(&[settings_path]);
+
+        assert!(report.contains("Claude startup hooks: none found"));
+        assert!(report.contains("invalid JSON in"));
+        assert!(!report.contains("found 0 command(s)"));
     }
 
     #[test]

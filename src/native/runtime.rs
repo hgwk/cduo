@@ -31,7 +31,7 @@ use crate::native::layout::{
     focus_index, pane_id_index, pane_layouts_for_view, resize_panes_for_view, split_label,
     toggle_split,
 };
-use crate::native::pane::{Focus, Pane, PaneId};
+use crate::native::pane::{Focus, Pane, PaneId, PaneSpawnOptions};
 use crate::native::relay;
 use crate::native::render::draw;
 use crate::native::selection::{
@@ -45,7 +45,7 @@ const POLL_INTERVAL_MS: u64 = 8;
 const SCROLL_LINES: usize = 5;
 const LOG_TICKER_STATUS_RESERVE: usize = 64;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RuntimeOptions {
     pub agent_a: Agent,
     pub agent_b: Agent,
@@ -56,6 +56,9 @@ pub struct RuntimeOptions {
     /// mode currently spawns a fresh session every time so this is a no-op.
     #[allow(dead_code)]
     pub new_session: bool,
+    pub session_name: Option<String>,
+    pub role_a: Option<String>,
+    pub role_b: Option<String>,
 }
 
 pub async fn run(opts: RuntimeOptions) -> Result<()> {
@@ -207,30 +210,41 @@ fn ui_loop(
     let mode = AccessMode::from_flags(opts.yolo, opts.full_access)?;
     let mut split = opts.split;
 
-    let pane_a = Pane::spawn(
-        PaneId::A,
-        agent_program(opts.agent_a),
-        agent_args(opts.agent_a, mode),
+    let pane_a_env = pane_env(
+        "a",
+        port_str.as_str(),
+        opts.session_name.as_deref(),
+        opts.role_a.as_deref(),
+    );
+    let pane_b_env = pane_env(
+        "b",
+        port_str.as_str(),
+        opts.session_name.as_deref(),
+        opts.role_b.as_deref(),
+    );
+
+    let pane_a = Pane::spawn(PaneSpawnOptions {
+        id: PaneId::A,
+        agent: agent_program(opts.agent_a),
+        args: agent_args(opts.agent_a, mode),
         cwd,
-        pane_cols,
-        pane_rows,
-        &[
-            ("TERMINAL_ID", "a"),
-            ("ORCHESTRATION_PORT", port_str.as_str()),
-        ],
-    )?;
-    let pane_b = Pane::spawn(
-        PaneId::B,
-        agent_program(opts.agent_b),
-        agent_args(opts.agent_b, mode),
+        cols: pane_cols,
+        rows: pane_rows,
+        env: &pane_a_env,
+        role: opts.role_a.clone(),
+        session_name: opts.session_name.clone(),
+    })?;
+    let pane_b = Pane::spawn(PaneSpawnOptions {
+        id: PaneId::B,
+        agent: agent_program(opts.agent_b),
+        args: agent_args(opts.agent_b, mode),
         cwd,
-        pane_cols,
-        pane_rows,
-        &[
-            ("TERMINAL_ID", "b"),
-            ("ORCHESTRATION_PORT", port_str.as_str()),
-        ],
-    )?;
+        cols: pane_cols,
+        rows: pane_rows,
+        env: &pane_b_env,
+        role: opts.role_b.clone(),
+        session_name: opts.session_name.clone(),
+    })?;
 
     let mut panes: [Pane; 2] = [pane_a, pane_b];
     let mut focus = Focus(PaneId::A);
@@ -239,7 +253,7 @@ fn ui_loop(
     let mut dirty = true;
     let mut last_hook_at: Option<Instant> = None;
     let mut footer_msg = format!(
-        " hook:{} ·  · Ctrl-Y: broadcast  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
+        " hook:{} ·  · Ctrl-Y: broadcast  · Ctrl-N: names  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
         hook_port,
     );
     let mut error_set_at: Option<Instant> = None;
@@ -252,6 +266,7 @@ fn ui_loop(
     let mut relay_auto_stopped = false;
     let mut maximized: Option<PaneId> = None;
     let mut broadcast_input: Option<String> = None;
+    let mut metadata_input: Option<String> = None;
     let mut log_ticker_on = false;
     let mut log_ticker_offset: usize = 0;
     let mut log_ticker_last_tick = Instant::now();
@@ -281,7 +296,7 @@ fn ui_loop(
 
         let dot = crate::native::footer::hook_ping_glyph(last_hook_at.map(|t| t.elapsed()));
         let default_footer_msg = format!(
-            " hook:{}{dot}  · Ctrl-Y: broadcast  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
+            " hook:{}{dot}  · Ctrl-Y: broadcast  · Ctrl-N: names  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit ",
             hook_port,
         );
 
@@ -322,6 +337,7 @@ fn ui_loop(
         let needs_tick = relay_paused
             || relay_auto_stopped
             || broadcast_input.is_some()
+            || metadata_input.is_some()
             || (a_to_b_enabled && b_to_a_enabled)
             || error_set_at.is_some()
             || last_hook_at.is_some()
@@ -400,8 +416,33 @@ fn ui_loop(
                     if key.kind == KeyEventKind::Release {
                         continue;
                     }
-                    if broadcast_input.is_some() && classify_key(key) == GlobalAction::Quit {
+                    if (broadcast_input.is_some() || metadata_input.is_some())
+                        && classify_key(key) == GlobalAction::Quit
+                    {
                         break 'main;
+                    }
+                    if let Some(buffer) = metadata_input.as_mut() {
+                        match handle_metadata_key(key, buffer) {
+                            MetadataInputAction::Editing => {
+                                footer_msg = metadata_input_footer(buffer);
+                                error_set_at = None;
+                            }
+                            MetadataInputAction::Cancel => {
+                                metadata_input = None;
+                                footer_msg = default_footer_msg.clone();
+                                error_set_at = None;
+                            }
+                            MetadataInputAction::Submit(input) => {
+                                metadata_input = None;
+                                footer_msg = match parse_metadata_update(&input) {
+                                    Ok(update) => apply_metadata_update(&mut panes, update),
+                                    Err(err) => format!(" metadata unchanged · {err} "),
+                                };
+                                error_set_at = None;
+                            }
+                        }
+                        dirty = true;
+                        continue;
                     }
                     if let Some(buffer) = broadcast_input.as_mut() {
                         match handle_broadcast_key(key, buffer) {
@@ -465,11 +506,20 @@ fn ui_loop(
                             dirty = true;
                         }
                         GlobalAction::TogglePause => {
-                            relay_paused = !relay_paused;
-                            footer_msg = if relay_paused {
-                                pause_footer(paused_writes.len())
-                            } else {
+                            footer_msg = if relay_auto_stopped {
+                                relay_auto_stopped = false;
+                                relay_paused = false;
+                                send_control_or_footer(
+                                    &control_tx,
+                                    relay::RelayControl::ResetStop,
+                                    relay_reset_footer,
+                                )
+                            } else if relay_paused {
+                                relay_paused = false;
                                 default_footer_msg.clone()
+                            } else {
+                                relay_paused = true;
+                                pause_footer(paused_writes.len())
                             };
                             error_set_at = None;
                             dirty = true;
@@ -579,12 +629,33 @@ fn ui_loop(
                             error_set_at = None;
                             dirty = true;
                         }
+                        GlobalAction::EditMetadata => {
+                            metadata_input = Some(current_metadata_input(&panes));
+                            footer_msg =
+                                metadata_input_footer(metadata_input.as_deref().unwrap_or(""));
+                            error_set_at = None;
+                            dirty = true;
+                        }
                         GlobalAction::ScrollUp => {
-                            panes[focus_index(focus)].scroll_up(SCROLL_LINES);
+                            handle_screen_scroll(
+                                &mut panes,
+                                focus.0,
+                                GlobalAction::ScrollUp,
+                                &mut footer_msg,
+                                &mut error_set_at,
+                                &mut error_raw_msg,
+                            );
                             dirty = true;
                         }
                         GlobalAction::ScrollDown => {
-                            panes[focus_index(focus)].scroll_down(SCROLL_LINES);
+                            handle_screen_scroll(
+                                &mut panes,
+                                focus.0,
+                                GlobalAction::ScrollDown,
+                                &mut footer_msg,
+                                &mut error_set_at,
+                                &mut error_raw_msg,
+                            );
                             dirty = true;
                         }
                         GlobalAction::ToggleLogTicker => {
@@ -745,6 +816,22 @@ fn ui_loop(
     Ok(())
 }
 
+fn pane_env<'a>(
+    terminal_id: &'static str,
+    port: &'a str,
+    session_name: Option<&'a str>,
+    role: Option<&'a str>,
+) -> Vec<(&'static str, &'a str)> {
+    let mut env = vec![("TERMINAL_ID", terminal_id), ("ORCHESTRATION_PORT", port)];
+    if let Some(session_name) = session_name.filter(|value| !value.trim().is_empty()) {
+        env.push(("CDUO_SESSION_NAME", session_name));
+    }
+    if let Some(role) = role.filter(|value| !value.trim().is_empty()) {
+        env.push(("CDUO_PANE_ROLE", role));
+    }
+    env
+}
+
 struct RuntimeChannels {
     input_tx: mpsc::Sender<(String, String)>,
     control_tx: mpsc::Sender<relay::RelayControl>,
@@ -883,6 +970,41 @@ fn handle_mouse_wheel(
     }
 }
 
+fn handle_screen_scroll(
+    panes: &mut [Pane; 2],
+    pane: PaneId,
+    action: GlobalAction,
+    footer_msg: &mut String,
+    error_set_at: &mut Option<Instant>,
+    error_raw_msg: &mut String,
+) {
+    let idx = pane_id_index(pane);
+    if panes[idx].agent == "codex" {
+        if let Some(bytes) = codex_screen_scroll_bytes(&action) {
+            if let Err(err) = panes[idx].write(bytes) {
+                *footer_msg = write_error_footer(pane.label(), &err);
+                *error_raw_msg = footer_msg.clone();
+                *error_set_at = Some(Instant::now());
+            }
+        }
+        return;
+    }
+
+    match action {
+        GlobalAction::ScrollUp => panes[idx].scroll_up(SCROLL_LINES),
+        GlobalAction::ScrollDown => panes[idx].scroll_down(SCROLL_LINES),
+        _ => {}
+    }
+}
+
+fn codex_screen_scroll_bytes(action: &GlobalAction) -> Option<&'static [u8]> {
+    match action {
+        GlobalAction::ScrollUp => Some(b"\x1b[5~"),
+        GlobalAction::ScrollDown => Some(b"\x1b[6~"),
+        _ => None,
+    }
+}
+
 fn mouse_wheel_bytes(kind: MouseEventKind, row: u16, col: u16) -> Option<Vec<u8>> {
     let button = match kind {
         MouseEventKind::ScrollUp => 64,
@@ -894,6 +1016,13 @@ fn mouse_wheel_bytes(kind: MouseEventKind, row: u16, col: u16) -> Option<Vec<u8>
 
 #[derive(Debug, PartialEq, Eq)]
 enum BroadcastInputAction {
+    Editing,
+    Cancel,
+    Submit(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MetadataInputAction {
     Editing,
     Cancel,
     Submit(String),
@@ -931,8 +1060,40 @@ fn handle_broadcast_key(key: KeyEvent, buffer: &mut String) -> BroadcastInputAct
     }
 }
 
+fn handle_metadata_key(key: KeyEvent, buffer: &mut String) -> MetadataInputAction {
+    match key.code {
+        KeyCode::Esc => MetadataInputAction::Cancel,
+        KeyCode::Char('n') | KeyCode::Char('N')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            MetadataInputAction::Cancel
+        }
+        KeyCode::Enter => {
+            let input = buffer.trim().to_string();
+            if input.is_empty() {
+                MetadataInputAction::Cancel
+            } else {
+                MetadataInputAction::Submit(input)
+            }
+        }
+        KeyCode::Backspace => {
+            buffer.pop();
+            MetadataInputAction::Editing
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
+        {
+            buffer.push(c);
+            MetadataInputAction::Editing
+        }
+        _ => MetadataInputAction::Editing,
+    }
+}
+
 fn broadcast_prompt_bytes(prompt: &str) -> Vec<u8> {
-    format!("{prompt}\r").into_bytes()
+    format!("User says: {prompt}\r").into_bytes()
 }
 
 fn send_broadcast_prompt(
@@ -971,6 +1132,139 @@ fn broadcast_input_footer(buffer: &str, elapsed: Duration) -> String {
     format!(" broadcast> {buffer}{caret} · Enter: send · Esc: cancel ")
 }
 
+fn metadata_input_footer(buffer: &str) -> String {
+    format!(" metadata> {buffer} · Enter: apply · Esc: cancel ")
+}
+
+fn current_metadata_input(panes: &[Pane; 2]) -> String {
+    metadata_input_value(
+        panes[0].session_name.as_deref(),
+        panes[0].role.as_deref(),
+        panes[1].role.as_deref(),
+    )
+}
+
+fn metadata_input_value(
+    session_name: Option<&str>,
+    role_a: Option<&str>,
+    role_b: Option<&str>,
+) -> String {
+    let session = format_metadata_value(session_name);
+    let role_a = format_metadata_value(role_a);
+    let role_b = format_metadata_value(role_b);
+    format!("session={session} a={role_a} b={role_b}")
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MetadataUpdate {
+    session_name: Option<Option<String>>,
+    role_a: Option<Option<String>>,
+    role_b: Option<Option<String>>,
+}
+
+fn parse_metadata_update(input: &str) -> Result<MetadataUpdate, String> {
+    let mut update = MetadataUpdate::default();
+    for token in split_metadata_tokens(input)? {
+        let Some((key, value)) = token.split_once('=') else {
+            return Err(format!("expected key=value, got '{token}'"));
+        };
+        let value = metadata_value(value);
+        match key {
+            "session" | "name" | "session-name" | "session_name" => {
+                update.session_name = Some(value);
+            }
+            "a" | "role-a" | "role_a" => {
+                update.role_a = Some(value);
+            }
+            "b" | "role-b" | "role_b" => {
+                update.role_b = Some(value);
+            }
+            _ => return Err(format!("unknown key '{key}'")),
+        }
+    }
+    if update == MetadataUpdate::default() {
+        return Err("no metadata fields provided".to_string());
+    }
+    Ok(update)
+}
+
+fn split_metadata_tokens(input: &str) -> Result<Vec<String>, String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_quotes = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_quotes => escaped = true,
+            '"' => in_quotes = !in_quotes,
+            ch if ch.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                while chars.peek().is_some_and(|next| next.is_whitespace()) {
+                    chars.next();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if in_quotes {
+        return Err("unterminated quoted metadata value".to_string());
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    Ok(tokens)
+}
+
+fn metadata_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value == "-" || value.eq_ignore_ascii_case("none") {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn format_metadata_value(value: Option<&str>) -> String {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return "-".to_string();
+    };
+    if value
+        .chars()
+        .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '\\' | '='))
+    {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn apply_metadata_update(panes: &mut [Pane; 2], update: MetadataUpdate) -> String {
+    if let Some(session_name) = update.session_name {
+        for pane in panes.iter_mut() {
+            pane.session_name = session_name.clone();
+        }
+    }
+    if let Some(role) = update.role_a {
+        panes[0].role = role;
+    }
+    if let Some(role) = update.role_b {
+        panes[1].role = role;
+    }
+    format!(" metadata updated · {} ", current_metadata_input(panes))
+}
+
 fn send_control_or_footer(
     control_tx: &mpsc::Sender<relay::RelayControl>,
     control: relay::RelayControl,
@@ -988,6 +1282,10 @@ fn write_error_footer(target: &str, err: &dyn std::fmt::Display) -> String {
 
 fn pause_footer(queued_writes: usize) -> String {
     format!(" relay paused · queued writes: {queued_writes} · Ctrl-P: resume ")
+}
+
+fn relay_reset_footer() -> String {
+    " relay restarted · auto relay ON ".to_string()
 }
 
 fn clear_paused_writes(paused_writes: &mut VecDeque<(String, Vec<u8>)>) -> usize {
@@ -1057,7 +1355,7 @@ struct RelayStatusView<'a> {
 
 fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
     use crate::native::footer::{
-        activity_dot, direction_arrow, stop_warn_glyph, traffic_sparkline, Direction,
+        activity_dot, route_status_token, stop_warn_glyph, traffic_sparkline,
     };
     let RelayStatusView {
         message,
@@ -1104,8 +1402,6 @@ fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
         .last_b_to_a_at
         .map(|t| now.duration_since(t) < Duration::from_millis(200))
         .unwrap_or(false);
-    let arrow_ab = direction_arrow(Direction::Right, a_to_b_enabled, pulse_a_to_b);
-    let arrow_ba = direction_arrow(Direction::Left, b_to_a_enabled, pulse_b_to_a);
     let spark_ab_vec: Vec<u64> = traffic.samples_a_to_b.iter().copied().collect();
     let spark_ba_vec: Vec<u64> = traffic.samples_b_to_a.iter().copied().collect();
     let spark_ab = traffic_sparkline(&spark_ab_vec);
@@ -1115,9 +1411,11 @@ fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
 
     let routes = if !relay_paused && !relay_auto_stopped && a_to_b_enabled && b_to_a_enabled {
         let pp = pingpong_dot(elapsed);
-        format!("A{act_a} {spark_ba} {arrow_ba} {pp} {arrow_ab} {spark_ab} {act_b}B")
+        format!("A{act_a} {spark_ba} {pp} {spark_ab} {act_b}B")
     } else {
-        format!("A{act_a} {arrow_ba} | {arrow_ab} {act_b}B")
+        let route_ab = route_status_token("ab", a_to_b_enabled, pulse_a_to_b);
+        let route_ba = route_status_token("ba", b_to_a_enabled, pulse_b_to_a);
+        format!("A{act_a} {route_ba} | {route_ab} {act_b}B")
     };
     let uptime = uptime_label(elapsed);
     format!(
@@ -1281,6 +1579,19 @@ mod tests {
     }
 
     #[test]
+    fn codex_screen_scroll_uses_page_key_sequences() {
+        assert_eq!(
+            codex_screen_scroll_bytes(&GlobalAction::ScrollUp).unwrap(),
+            b"\x1b[5~"
+        );
+        assert_eq!(
+            codex_screen_scroll_bytes(&GlobalAction::ScrollDown).unwrap(),
+            b"\x1b[6~"
+        );
+        assert!(codex_screen_scroll_bytes(&GlobalAction::Forward).is_none());
+    }
+
+    #[test]
     fn broadcast_key_buffer_edits_and_submits() {
         let mut buffer = String::new();
 
@@ -1353,7 +1664,7 @@ mod tests {
     #[test]
     fn broadcast_prompt_bytes_add_enter_and_capture_both_panes() {
         let bytes = broadcast_prompt_bytes("same prompt");
-        assert_eq!(bytes, b"same prompt\r");
+        assert_eq!(bytes, "User says: same prompt\r".as_bytes());
 
         let mut buf: HashMap<PaneId, Vec<u8>> = HashMap::new();
         let (tx, mut rx) = mpsc::channel::<(String, String)>(8);
@@ -1363,8 +1674,14 @@ mod tests {
 
         let first = rx.try_recv().unwrap();
         let second = rx.try_recv().unwrap();
-        assert_eq!(first, ("a".to_string(), "same prompt".to_string()));
-        assert_eq!(second, ("b".to_string(), "same prompt".to_string()));
+        assert_eq!(
+            first,
+            ("a".to_string(), "User says: same prompt".to_string())
+        );
+        assert_eq!(
+            second,
+            ("b".to_string(), "User says: same prompt".to_string())
+        );
     }
 
     #[test]
@@ -1374,6 +1691,112 @@ mod tests {
         assert!(footer.contains("broadcast> compare this"));
         assert!(footer.contains("Enter"));
         assert!(footer.contains("Esc"));
+    }
+
+    #[test]
+    fn metadata_key_buffer_edits_and_submits() {
+        let mut buffer = String::new();
+
+        assert_eq!(
+            handle_metadata_key(
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+                &mut buffer
+            ),
+            MetadataInputAction::Editing
+        );
+        assert_eq!(
+            handle_metadata_key(
+                KeyEvent::new(KeyCode::Char('='), KeyModifiers::NONE),
+                &mut buffer
+            ),
+            MetadataInputAction::Editing
+        );
+        assert_eq!(buffer, "s=");
+        assert_eq!(
+            handle_metadata_key(
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                &mut buffer
+            ),
+            MetadataInputAction::Editing
+        );
+        assert_eq!(buffer, "s");
+        assert_eq!(
+            handle_metadata_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &mut buffer
+            ),
+            MetadataInputAction::Submit("s".to_string())
+        );
+    }
+
+    #[test]
+    fn metadata_key_ctrl_n_cancels_mode() {
+        let mut buffer = "session=api".to_string();
+
+        assert_eq!(
+            handle_metadata_key(
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                &mut buffer
+            ),
+            MetadataInputAction::Cancel
+        );
+    }
+
+    #[test]
+    fn metadata_footer_names_controls() {
+        let footer = metadata_input_footer("session=api a=planner b=builder");
+
+        assert!(footer.contains("metadata> session=api a=planner b=builder"));
+        assert!(footer.contains("Enter"));
+        assert!(footer.contains("Esc"));
+    }
+
+    #[test]
+    fn parse_metadata_update_accepts_session_and_roles() {
+        let update = parse_metadata_update("session=api a=planner b=builder").unwrap();
+
+        assert_eq!(update.session_name, Some(Some("api".to_string())));
+        assert_eq!(update.role_a, Some(Some("planner".to_string())));
+        assert_eq!(update.role_b, Some(Some("builder".to_string())));
+    }
+
+    #[test]
+    fn parse_metadata_update_accepts_quoted_values_with_spaces() {
+        let update =
+            parse_metadata_update(r#"session="api team" a="code reviewer" b="ship builder""#)
+                .unwrap();
+
+        assert_eq!(update.session_name, Some(Some("api team".to_string())));
+        assert_eq!(update.role_a, Some(Some("code reviewer".to_string())));
+        assert_eq!(update.role_b, Some(Some("ship builder".to_string())));
+    }
+
+    #[test]
+    fn current_metadata_input_quotes_values_with_spaces() {
+        assert_eq!(
+            metadata_input_value(
+                Some("api team"),
+                Some("code reviewer"),
+                Some("ship builder")
+            ),
+            r#"session="api team" a="code reviewer" b="ship builder""#
+        );
+    }
+
+    #[test]
+    fn parse_metadata_update_can_clear_fields() {
+        let update = parse_metadata_update("session=- a=none b=").unwrap();
+
+        assert_eq!(update.session_name, Some(None));
+        assert_eq!(update.role_a, Some(None));
+        assert_eq!(update.role_b, Some(None));
+    }
+
+    #[test]
+    fn parse_metadata_update_rejects_unknown_fields() {
+        let err = parse_metadata_update("team=api").unwrap_err();
+
+        assert!(err.contains("unknown key"));
     }
 
     #[test]
@@ -1395,6 +1818,30 @@ mod tests {
         let footer = write_error_footer("a", &std::io::Error::other("closed"));
         assert!(footer.contains("pane a"));
         assert!(footer.contains("closed"));
+    }
+
+    #[test]
+    fn relay_reset_footer_names_auto_relay_on_state() {
+        assert_eq!(relay_reset_footer(), " relay restarted · auto relay ON ");
+    }
+
+    #[test]
+    fn pane_env_includes_session_and_role_metadata() {
+        let env = pane_env("a", "53333", Some("api"), Some("planner"));
+
+        assert!(env.contains(&("TERMINAL_ID", "a")));
+        assert!(env.contains(&("ORCHESTRATION_PORT", "53333")));
+        assert!(env.contains(&("CDUO_SESSION_NAME", "api")));
+        assert!(env.contains(&("CDUO_PANE_ROLE", "planner")));
+    }
+
+    #[test]
+    fn pane_env_skips_blank_metadata() {
+        let env = pane_env("b", "53333", Some(" "), Some(""));
+
+        assert!(env.contains(&("TERMINAL_ID", "b")));
+        assert!(!env.iter().any(|(key, _)| *key == "CDUO_SESSION_NAME"));
+        assert!(!env.iter().any(|(key, _)| *key == "CDUO_PANE_ROLE"));
     }
 
     fn test_traffic() -> TrafficCounters {
@@ -1457,11 +1904,34 @@ mod tests {
         assert!(footer.contains("⏸"));
         assert!(footer.contains("relay[PAUSE] ●"));
         assert!(footer.contains("q[3] ▃"));
-        assert!(footer.contains("─x─")); // a_to_b disabled
-        assert!(footer.contains("─◀─")); // b_to_a enabled
+        assert!(footer.contains("ab[OFF]"));
+        assert!(footer.contains("ba[ON]"));
+        assert!(!footer.contains("─◀─"));
+        assert!(!footer.contains("─▶─"));
         assert!(footer.contains("ready"));
         assert!(footer.contains("up 00:00"));
         assert!(footer.ends_with("up 00:00"));
+    }
+
+    #[test]
+    fn footer_routes_use_pingpong_without_direction_arrows_when_both_routes_enabled() {
+        let traffic = test_traffic();
+        let footer = footer_with_relay_status(RelayStatusView {
+            message: "ready",
+            relay_paused: false,
+            queued_writes: 0,
+            a_to_b_enabled: true,
+            b_to_a_enabled: true,
+            relay_auto_stopped: false,
+            heartbeat: false,
+            elapsed: Duration::from_secs(0),
+            traffic: &traffic,
+            now: Instant::now(),
+        });
+
+        assert!(footer.contains("..●"));
+        assert!(!footer.contains("─◀─"));
+        assert!(!footer.contains("─▶─"));
     }
 
     #[test]

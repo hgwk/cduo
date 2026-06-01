@@ -29,12 +29,18 @@ pub(crate) fn draw(
     let footer_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
     let (layouts, divider_area) = pane_layouts_for_view(area, split, maximized);
 
+    let session = panes[0]
+        .session_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| format!("[{name}]"))
+        .unwrap_or_default();
     let header_text = format!(
-        " cduo · A{}:{} | B{}:{} · {} ",
+        " cduo{session} · A{}:{} | B{}:{} · {} ",
         focus_caret(focus.0 == PaneId::A),
-        panes[0].agent,
+        panes[0].display_label(),
         focus_caret(focus.0 == PaneId::B),
-        panes[1].agent,
+        panes[1].display_label(),
         build_channel_dot(),
     );
     frame.render_widget(
@@ -160,16 +166,18 @@ fn footer_token_style(token: &str) -> Option<Style> {
         return Some(Style::default().fg(Color::Cyan));
     }
 
-    if matches!(token, "─▶─" | "━▶━" | "─◀─" | "━◀━") {
-        let bold = matches!(token, "━▶━" | "━◀━");
-        let mut s = Style::default().fg(Color::Green);
-        if bold {
-            s = s.add_modifier(Modifier::BOLD);
-        }
-        return Some(s);
-    }
-    if token == "─x─" {
+    if token.ends_with("[OFF]") {
         return Some(Style::default().fg(Color::Red));
+    }
+    if token.ends_with("[HIT]") {
+        return Some(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+    if token.ends_with("[ON]") {
+        return Some(Style::default().fg(Color::Green));
     }
     if matches!(token, "∘") {
         return Some(Style::default().fg(Color::DarkGray));
@@ -179,7 +187,7 @@ fn footer_token_style(token: &str) -> Option<Style> {
         return Some(Style::default().fg(Color::Yellow));
     }
 
-    if matches!(token, "..>" | ".>." | ">..") {
+    if matches!(token, "..●" | ".●." | "●..") {
         return Some(Style::default().fg(Color::Green));
     }
 
@@ -368,13 +376,12 @@ mod tests {
 
     #[test]
     fn footer_version_is_right_aligned_when_width_allows() {
-        let footer = footer_with_version(" relay:on │ ready ", 24);
+        let expected = format!(" relay:on │ ready {}", footer_version_label());
+        let width = expected.chars().count() as u16;
+        let footer = footer_with_version(" relay:on │ ready ", width);
 
-        assert_eq!(
-            footer,
-            format!(" relay:on │ ready {}", footer_version_label())
-        );
-        assert_eq!(footer.chars().count(), 24);
+        assert_eq!(footer, expected);
+        assert_eq!(footer.chars().count(), width as usize);
     }
 
     #[test]

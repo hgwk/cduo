@@ -30,6 +30,15 @@ pub enum Commands {
 
         #[arg(long = "new", alias = "new-session", default_value_t = false)]
         new_session: bool,
+
+        #[arg(long, alias = "session")]
+        session_name: Option<String>,
+
+        #[arg(long)]
+        role_a: Option<String>,
+
+        #[arg(long)]
+        role_b: Option<String>,
     },
 
     #[command(about = "Start a native pair with Claude in pane A")]
@@ -48,6 +57,15 @@ pub enum Commands {
 
         #[arg(long = "new", alias = "new-session", default_value_t = false)]
         new_session: bool,
+
+        #[arg(long, alias = "session")]
+        session_name: Option<String>,
+
+        #[arg(long)]
+        role_a: Option<String>,
+
+        #[arg(long)]
+        role_b: Option<String>,
     },
 
     #[command(about = "Start a native pair with Codex in pane A")]
@@ -66,6 +84,15 @@ pub enum Commands {
 
         #[arg(long = "new", alias = "new-session", default_value_t = false)]
         new_session: bool,
+
+        #[arg(long, alias = "session")]
+        session_name: Option<String>,
+
+        #[arg(long)]
+        role_a: Option<String>,
+
+        #[arg(long)]
+        role_b: Option<String>,
     },
 
     #[command(about = "Explain native foreground session behavior")]
@@ -218,6 +245,96 @@ mod tests {
                 assert!(full_access);
             }
             _ => panic!("expected start command"),
+        }
+    }
+
+    #[test]
+    fn parses_session_name_and_roles() {
+        let cli = Cli::parse_from([
+            "cduo",
+            "start",
+            "--session-name",
+            "api",
+            "--role-a",
+            "planner",
+            "--role-b",
+            "builder",
+        ]);
+
+        match cli.command.unwrap() {
+            Commands::Start {
+                session_name,
+                role_a,
+                role_b,
+                ..
+            } => {
+                assert_eq!(session_name.as_deref(), Some("api"));
+                assert_eq!(role_a.as_deref(), Some("planner"));
+                assert_eq!(role_b.as_deref(), Some("builder"));
+            }
+            _ => panic!("expected start command"),
+        }
+    }
+
+    #[test]
+    fn parses_claude_session_name_and_roles() {
+        let cli = Cli::parse_from([
+            "cduo",
+            "claude",
+            "codex",
+            "--session-name",
+            "api",
+            "--role-a",
+            "planner",
+            "--role-b",
+            "builder",
+        ]);
+
+        match cli.command.unwrap() {
+            Commands::Claude {
+                peer_agent,
+                session_name,
+                role_a,
+                role_b,
+                ..
+            } => {
+                assert_eq!(peer_agent, Some(Agent::Codex));
+                assert_eq!(session_name.as_deref(), Some("api"));
+                assert_eq!(role_a.as_deref(), Some("planner"));
+                assert_eq!(role_b.as_deref(), Some("builder"));
+            }
+            _ => panic!("expected claude command"),
+        }
+    }
+
+    #[test]
+    fn parses_codex_session_name_and_roles() {
+        let cli = Cli::parse_from([
+            "cduo",
+            "codex",
+            "claude",
+            "--session-name",
+            "api",
+            "--role-a",
+            "planner",
+            "--role-b",
+            "builder",
+        ]);
+
+        match cli.command.unwrap() {
+            Commands::Codex {
+                peer_agent,
+                session_name,
+                role_a,
+                role_b,
+                ..
+            } => {
+                assert_eq!(peer_agent, Some(Agent::Claude));
+                assert_eq!(session_name.as_deref(), Some("api"));
+                assert_eq!(role_a.as_deref(), Some("planner"));
+                assert_eq!(role_b.as_deref(), Some("builder"));
+            }
+            _ => panic!("expected codex command"),
         }
     }
 

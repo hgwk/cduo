@@ -104,6 +104,8 @@ pub enum GlobalAction {
     ToggleFocusLayout,
     /// Open a footer prompt that sends one input to both panes.
     BroadcastInput,
+    /// Open a footer prompt that renames the session and pane roles.
+    EditMetadata,
     /// Scroll the focused pane upward through scrollback.
     ScrollUp,
     /// Scroll the focused pane downward toward the live screen.
@@ -117,8 +119,8 @@ pub enum GlobalAction {
 /// pause, Ctrl-L toggles split layout, Ctrl-R triggers manual relay, Ctrl-X
 /// clears queued relay writes, Ctrl-1/Ctrl-2 toggle relay directions, Ctrl-G
 /// shows recent relay activity, Ctrl-Z toggles focused-pane maximize,
-/// Ctrl-Y opens broadcast input for both panes, and Ctrl-T toggles the
-/// scrolling log ticker in the footer.
+/// Ctrl-Y opens broadcast input for both panes, Ctrl-N edits UI metadata,
+/// and Ctrl-T toggles the scrolling log ticker in the footer.
 /// Everything else is forwarded.
 pub fn classify_key(key: KeyEvent) -> GlobalAction {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -141,6 +143,7 @@ pub fn classify_key(key: KeyEvent) -> GlobalAction {
         KeyCode::Char('g') | KeyCode::Char('G') if ctrl => GlobalAction::ShowRelayLog,
         KeyCode::Char('z') | KeyCode::Char('Z') if ctrl => GlobalAction::ToggleFocusLayout,
         KeyCode::Char('y') | KeyCode::Char('Y') if ctrl => GlobalAction::BroadcastInput,
+        KeyCode::Char('n') | KeyCode::Char('N') if ctrl => GlobalAction::EditMetadata,
         KeyCode::Char('t') | KeyCode::Char('T') if ctrl => GlobalAction::ToggleLogTicker,
         KeyCode::PageUp => GlobalAction::ScrollUp,
         KeyCode::PageDown => GlobalAction::ScrollDown,
@@ -223,6 +226,10 @@ mod tests {
         assert_eq!(
             classify_key(key(KeyCode::Char('y'), KeyModifiers::CONTROL)),
             GlobalAction::BroadcastInput
+        );
+        assert_eq!(
+            classify_key(key(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+            GlobalAction::EditMetadata
         );
     }
 

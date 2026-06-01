@@ -103,6 +103,10 @@ impl MessageBus {
         }
     }
 
+    pub fn clear_dedup(&mut self) {
+        self.dedup_cache.clear();
+    }
+
     // --- Private helpers ---
 
     fn dedup_key(&self, msg: &Message) -> String {
@@ -203,5 +207,29 @@ mod tests {
 
         let result = bus.publish(make_message("b", "closed target"));
         assert_eq!(result, PublishResult::SubscriberClosed);
+    }
+
+    #[tokio::test]
+    async fn clear_dedup_allows_same_message_again() {
+        let mut bus = MessageBus::new();
+        let mut rx = bus.subscribe("b");
+
+        assert_eq!(
+            bus.publish(make_message("b", "duplicate content")),
+            PublishResult::Delivered
+        );
+        rx.recv().await.expect("should receive first message");
+        assert_eq!(
+            bus.publish(make_message("b", "duplicate content")),
+            PublishResult::Deduplicated
+        );
+
+        bus.clear_dedup();
+
+        assert_eq!(
+            bus.publish(make_message("b", "duplicate content")),
+            PublishResult::Delivered
+        );
+        rx.recv().await.expect("should receive message after reset");
     }
 }

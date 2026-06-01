@@ -27,6 +27,9 @@ async fn main() {
         yolo: false,
         full_access: false,
         new_session: false,
+        session_name: None,
+        role_a: None,
+        role_b: None,
     }) {
         Commands::Start {
             agent,
@@ -35,15 +38,21 @@ async fn main() {
             yolo,
             full_access,
             new_session,
+            session_name,
+            role_a,
+            role_b,
         } => {
-            run_native_or_exit(
-                agent,
-                peer_agent.unwrap_or(agent),
+            run_native_or_exit(native::runtime::RuntimeOptions {
+                agent_a: agent,
+                agent_b: peer_agent.unwrap_or(agent),
                 split,
                 yolo,
                 full_access,
                 new_session,
-            )
+                session_name,
+                role_a,
+                role_b,
+            })
             .await;
         }
         Commands::Claude {
@@ -52,15 +61,21 @@ async fn main() {
             yolo,
             full_access,
             new_session,
+            session_name,
+            role_a,
+            role_b,
         } => {
-            run_native_or_exit(
-                cli::Agent::Claude,
-                peer_agent.unwrap_or(cli::Agent::Claude),
+            run_native_or_exit(native::runtime::RuntimeOptions {
+                agent_a: cli::Agent::Claude,
+                agent_b: peer_agent.unwrap_or(cli::Agent::Claude),
                 split,
                 yolo,
                 full_access,
                 new_session,
-            )
+                session_name,
+                role_a,
+                role_b,
+            })
             .await;
         }
         Commands::Codex {
@@ -69,15 +84,21 @@ async fn main() {
             yolo,
             full_access,
             new_session,
+            session_name,
+            role_a,
+            role_b,
         } => {
-            run_native_or_exit(
-                cli::Agent::Codex,
-                peer_agent.unwrap_or(cli::Agent::Codex),
+            run_native_or_exit(native::runtime::RuntimeOptions {
+                agent_a: cli::Agent::Codex,
+                agent_b: peer_agent.unwrap_or(cli::Agent::Codex),
                 split,
                 yolo,
                 full_access,
                 new_session,
-            )
+                session_name,
+                role_a,
+                role_b,
+            })
             .await;
         }
         Commands::Status { verbose } => {
@@ -120,22 +141,7 @@ async fn main() {
     }
 }
 
-async fn run_native_or_exit(
-    agent_a: cli::Agent,
-    agent_b: cli::Agent,
-    split: cli::SplitLayout,
-    yolo: bool,
-    full_access: bool,
-    new_session: bool,
-) {
-    let opts = native::runtime::RuntimeOptions {
-        agent_a,
-        agent_b,
-        split,
-        yolo,
-        full_access,
-        new_session,
-    };
+async fn run_native_or_exit(opts: native::runtime::RuntimeOptions) {
     if let Err(e) = native::runtime::run(opts).await {
         eprintln!("Error: {e}");
         process::exit(1);

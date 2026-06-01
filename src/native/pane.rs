@@ -34,6 +34,8 @@ impl PaneId {
 pub struct Pane {
     pub id: PaneId,
     pub agent: String,
+    pub role: Option<String>,
+    pub session_name: Option<String>,
     pub master: Box<dyn MasterPty + Send>,
     pub child: Box<dyn Child + Send + Sync>,
     pub writer: Box<dyn Write + Send>,
@@ -41,16 +43,31 @@ pub struct Pane {
     pub parser: vt100::Parser,
 }
 
+pub struct PaneSpawnOptions<'a> {
+    pub id: PaneId,
+    pub agent: &'a str,
+    pub args: &'a [&'a str],
+    pub cwd: &'a Path,
+    pub cols: u16,
+    pub rows: u16,
+    pub env: &'a [(&'a str, &'a str)],
+    pub role: Option<String>,
+    pub session_name: Option<String>,
+}
+
 impl Pane {
-    pub fn spawn(
-        id: PaneId,
-        agent: &str,
-        args: &[&str],
-        cwd: &Path,
-        cols: u16,
-        rows: u16,
-        env: &[(&str, &str)],
-    ) -> Result<Self> {
+    pub fn spawn(opts: PaneSpawnOptions<'_>) -> Result<Self> {
+        let PaneSpawnOptions {
+            id,
+            agent,
+            args,
+            cwd,
+            cols,
+            rows,
+            env,
+            role,
+            session_name,
+        } = opts;
         let pty_system = NativePtySystem::default();
         let pair = pty_system
             .openpty(PtySize {
@@ -88,6 +105,8 @@ impl Pane {
         Ok(Self {
             id,
             agent: agent.to_string(),
+            role,
+            session_name,
             master: pair.master,
             child,
             writer,
@@ -139,6 +158,13 @@ impl Pane {
 
     pub fn scrollback(&self) -> usize {
         self.parser.screen().scrollback()
+    }
+
+    pub fn display_label(&self) -> String {
+        match self.role.as_deref().filter(|role| !role.trim().is_empty()) {
+            Some(role) => format!("{role}({})", self.agent),
+            None => self.agent.clone(),
+        }
     }
 
     pub fn scroll_up(&mut self, rows: usize) {

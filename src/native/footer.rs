@@ -53,9 +53,9 @@ pub(crate) fn uptime_label(elapsed: Duration) -> String {
 
 pub(crate) fn pingpong_dot(elapsed: Duration) -> &'static str {
     match (elapsed.as_millis() / 500) % 3 {
-        0 => "..>",
-        1 => ".>.",
-        _ => ">..",
+        0 => "..●",
+        1 => ".●.",
+        _ => "●..",
     }
 }
 
@@ -91,28 +91,13 @@ pub(crate) fn traffic_sparkline(samples: &[u64]) -> String {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Direction {
-    Left,
-    Right,
-}
-
-pub(crate) fn direction_arrow(
-    direction: Direction,
-    active: bool,
-    recently_hit: bool,
-) -> &'static str {
-    match (active, recently_hit) {
-        (false, _) => "─x─",
-        (true, true) => match direction {
-            Direction::Left => "━◀━",
-            Direction::Right => "━▶━",
-        },
-        (true, false) => match direction {
-            Direction::Left => "─◀─",
-            Direction::Right => "─▶─",
-        },
-    }
+pub(crate) fn route_status_token(route: &str, active: bool, recently_hit: bool) -> String {
+    let state = match (active, recently_hit) {
+        (false, _) => "OFF",
+        (true, true) => "HIT",
+        (true, false) => "ON",
+    };
+    format!("{route}[{state}]")
 }
 
 pub(crate) fn activity_dot(bytes_last_sec: u64) -> &'static str {
@@ -200,7 +185,7 @@ mod tests {
         let frames: Vec<&str> = (0..4)
             .map(|i| pingpong_dot(Duration::from_millis(i * 500)))
             .collect();
-        assert_eq!(frames, vec!["..>", ".>.", ">..", "..>"]);
+        assert_eq!(frames, vec!["..●", ".●.", "●..", "..●"]);
         assert!(frames.iter().all(|frame| frame.chars().count() == 3));
     }
 
@@ -233,12 +218,10 @@ mod tests {
     }
 
     #[test]
-    fn direction_arrow_states() {
-        assert_eq!(direction_arrow(Direction::Right, false, false), "─x─");
-        assert_eq!(direction_arrow(Direction::Right, true, false), "─▶─");
-        assert_eq!(direction_arrow(Direction::Right, true, true), "━▶━");
-        assert_eq!(direction_arrow(Direction::Left, true, false), "─◀─");
-        assert_eq!(direction_arrow(Direction::Left, true, true), "━◀━");
+    fn route_status_token_states() {
+        assert_eq!(route_status_token("ab", false, false), "ab[OFF]");
+        assert_eq!(route_status_token("ab", true, false), "ab[ON]");
+        assert_eq!(route_status_token("ba", true, true), "ba[HIT]");
     }
 
     #[test]
