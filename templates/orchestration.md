@@ -29,6 +29,8 @@ When you complete a task, the system will automatically:
 - "Implemented authentication API at `/api/auth`. Endpoints: POST /login, POST /register, GET /verify"
 - "Created UserService with methods: createUser(), authenticateUser(), getProfile()"
 - "Added validation schema for user registration in schemas/user.js"
+- For handoff-heavy work, include compact fields: `Assumption`, `Decision`,
+  `Changed`, `Verify`, and `Risk/Next`.
 
 **Avoid:**
 - Long explanations unless requested

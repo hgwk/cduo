@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 
 const ORCHESTRATION_START: &str = "<!-- CDUO_ORCHESTRATION_START -->";
 const ORCHESTRATION_END: &str = "<!-- CDUO_ORCHESTRATION_END -->";
-const ORCHESTRATION_REF: &str = "@.cduo/orchestration.md";
+const LEGACY_ORCHESTRATION_REF: &str = "@.cduo/orchestration.md";
 
 fn project_paths(cwd: &Path) -> ProjectPaths {
     ProjectPaths {
@@ -15,7 +15,9 @@ fn project_paths(cwd: &Path) -> ProjectPaths {
         settings_target: cwd.join(".claude").join("settings.local.json"),
         claude_md_target: cwd.join("CLAUDE.md"),
         agents_md_target: cwd.join("AGENTS.md"),
-        orchestration_target: cwd.join(".cduo").join("orchestration.md"),
+        orchestration_target: home_orchestration_path()
+            .unwrap_or_else(|_| cwd.join(".cduo").join("orchestration.md")),
+        legacy_orchestration_target: cwd.join(".cduo").join("orchestration.md"),
         backup_root: cwd.join(".cduo").join("backups"),
     }
 }
@@ -26,6 +28,7 @@ struct ProjectPaths {
     claude_md_target: PathBuf,
     agents_md_target: PathBuf,
     orchestration_target: PathBuf,
+    legacy_orchestration_target: PathBuf,
     backup_root: PathBuf,
 }
 
@@ -39,6 +42,24 @@ fn template_orchestration() -> Result<String> {
     Ok(tmpl.to_string())
 }
 
+fn cduo_home_dir() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("CDUO_HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        bail!("HOME is not set; cannot locate cduo home directory");
+    };
+    Ok(PathBuf::from(home).join(".cduo"))
+}
+
+fn home_orchestration_path() -> Result<PathBuf> {
+    Ok(cduo_home_dir()?.join("orchestration-guide.md"))
+}
+
+fn orchestration_ref() -> Result<String> {
+    Ok(format!("@{}", home_orchestration_path()?.display()))
+}
+
 pub fn init(force: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let paths = project_paths(&cwd);
@@ -47,9 +68,9 @@ pub fn init(force: bool) -> Result<()> {
 
     let settings_changed = ensure_stop_hook(&paths.settings_target, force)?;
     let orchestration_changed = ensure_orchestration_file(&paths.orchestration_target, force)?;
+    remove_legacy_orchestration_file(&paths)?;
     let claude_md_changed = ensure_instruction_reference(&paths.claude_md_target, force)?;
-    let agents_md_skipped = should_skip_existing_agents_reference(&paths.agents_md_target, force)?;
-    let agents_md_changed = ensure_agents_reference(&paths.agents_md_target, force)?;
+    let agents_md_changed = ensure_instruction_reference(&paths.agents_md_target, force)?;
 
     if settings_changed {
         println!("✓ .claude/settings.local.json updated");
@@ -58,9 +79,9 @@ pub fn init(force: bool) -> Result<()> {
     }
 
     if orchestration_changed {
-        println!("✓ .cduo/orchestration.md updated");
+        println!("✓ ~/.cduo/orchestration-guide.md updated");
     } else {
-        println!("✓ .cduo/orchestration.md already up to date");
+        println!("✓ ~/.cduo/orchestration-guide.md already up to date");
     }
 
     if claude_md_changed {
@@ -69,9 +90,7 @@ pub fn init(force: bool) -> Result<()> {
         println!("✓ CLAUDE.md already references cduo orchestration");
     }
 
-    if agents_md_skipped {
-        println!("✓ AGENTS.md left unchanged; use --force to add cduo reference");
-    } else if agents_md_changed {
+    if agents_md_changed {
         println!("✓ AGENTS.md references cduo orchestration");
     } else {
         println!("✓ AGENTS.md already references cduo orchestration");
@@ -191,9 +210,20 @@ fn ensure_orchestration_file(path: &Path, force: bool) -> Result<bool> {
     Ok(false)
 }
 
+fn remove_legacy_orchestration_file(paths: &ProjectPaths) -> Result<()> {
+    if paths.legacy_orchestration_target == paths.orchestration_target {
+        return Ok(());
+    }
+    if paths.legacy_orchestration_target.exists() {
+        fs::remove_file(&paths.legacy_orchestration_target)?;
+    }
+    Ok(())
+}
+
 fn ensure_instruction_reference(path: &Path, force: bool) -> Result<bool> {
+    let orchestration_ref = orchestration_ref()?;
     if !path.exists() {
-        fs::write(path, format!("{ORCHESTRATION_REF}\n"))?;
+        fs::write(path, format!("{orchestration_ref}\n"))?;
         return Ok(true);
     }
 
@@ -206,9 +236,9 @@ fn ensure_instruction_reference(path: &Path, force: bool) -> Result<bool> {
     let (without_legacy, _) = remove_orchestration_block(&without_ref);
     let body = without_legacy.trim();
     let updated = if body.is_empty() {
-        format!("{ORCHESTRATION_REF}\n")
+        format!("{orchestration_ref}\n")
     } else {
-        format!("{ORCHESTRATION_REF}\n\n---\n\n{body}\n")
+        format!("{orchestration_ref}\n\n---\n\n{body}\n")
     };
 
     if updated == existing {
@@ -217,27 +247,6 @@ fn ensure_instruction_reference(path: &Path, force: bool) -> Result<bool> {
 
     fs::write(path, updated)?;
     Ok(true)
-}
-
-fn ensure_agents_reference(path: &Path, force: bool) -> Result<bool> {
-    if !path.exists() || force {
-        return ensure_instruction_reference(path, force);
-    }
-
-    let existing = fs::read_to_string(path)?;
-    if has_instruction_reference(&existing) || has_legacy_orchestration(&existing) {
-        return ensure_instruction_reference(path, false);
-    }
-
-    Ok(false)
-}
-
-fn should_skip_existing_agents_reference(path: &Path, force: bool) -> Result<bool> {
-    if force || !path.exists() {
-        return Ok(false);
-    }
-    let existing = fs::read_to_string(path)?;
-    Ok(!has_instruction_reference(&existing) && !has_legacy_orchestration(&existing))
 }
 
 fn has_instruction_reference(content: &str) -> bool {
@@ -283,11 +292,20 @@ fn remove_reference_prelude(content: &str) -> (String, bool) {
 }
 
 fn reference_prelude_position(content: &str) -> Option<usize> {
+    let refs = known_orchestration_refs();
     let lines = content.lines().collect::<Vec<_>>();
     lines
         .iter()
-        .position(|line| line.trim() == ORCHESTRATION_REF)
+        .position(|line| refs.iter().any(|reference| line.trim() == reference))
         .filter(|pos| lines[..*pos].iter().all(|line| line.trim().is_empty()))
+}
+
+fn known_orchestration_refs() -> Vec<String> {
+    let mut refs = vec![LEGACY_ORCHESTRATION_REF.to_string()];
+    if let Ok(reference) = orchestration_ref() {
+        refs.insert(0, reference);
+    }
+    refs
 }
 
 fn strip_leading_cduo_separator(content: &str) -> String {
@@ -451,8 +469,8 @@ pub fn backup() -> Result<()> {
     if paths.agents_md_target.exists() {
         files.push((&paths.agents_md_target, "AGENTS.md"));
     }
-    if paths.orchestration_target.exists() {
-        files.push((&paths.orchestration_target, "orchestration.md"));
+    if paths.legacy_orchestration_target.exists() {
+        files.push((&paths.legacy_orchestration_target, "orchestration.md"));
     }
 
     if files.is_empty() {
@@ -523,8 +541,8 @@ pub fn uninstall() -> Result<()> {
         changed = true;
     }
 
-    if paths.orchestration_target.exists() {
-        fs::remove_file(&paths.orchestration_target)?;
+    if paths.legacy_orchestration_target.exists() {
+        fs::remove_file(&paths.legacy_orchestration_target)?;
         println!("✓ Removed .cduo/orchestration.md");
         changed = true;
     }
@@ -537,7 +555,7 @@ pub fn uninstall() -> Result<()> {
 }
 
 fn uninstall_targets_exist(paths: &ProjectPaths) -> Result<bool> {
-    if paths.orchestration_target.exists() {
+    if paths.legacy_orchestration_target.exists() {
         return Ok(true);
     }
     if instruction_removal_target_exists(&paths.claude_md_target)?
@@ -861,12 +879,13 @@ mod tests {
     fn test_ensure_instruction_reference_creates_new() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("CLAUDE.md");
+        let reference = orchestration_ref().unwrap();
 
         let changed = ensure_instruction_reference(&path, false).unwrap();
         assert!(changed);
 
         let content = fs::read_to_string(&path).unwrap();
-        assert_eq!(content, format!("{ORCHESTRATION_REF}\n"));
+        assert_eq!(content, format!("{reference}\n"));
     }
 
     #[test]
@@ -879,7 +898,7 @@ mod tests {
         assert!(changed);
 
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with(ORCHESTRATION_REF));
+        assert!(content.starts_with(&orchestration_ref().unwrap()));
         assert!(content.contains("My Project"));
     }
 
@@ -900,7 +919,7 @@ mod tests {
         assert!(changed);
 
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with(ORCHESTRATION_REF));
+        assert!(content.starts_with(&orchestration_ref().unwrap()));
         assert!(!content.contains("legacy"));
         assert!(content.contains("My Project"));
     }
@@ -909,13 +928,17 @@ mod tests {
     fn test_ensure_instruction_reference_force_preserves_existing_body() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("AGENTS.md");
-        fs::write(&path, format!("{ORCHESTRATION_REF}\n\n---\n\n# Keep Me\n")).unwrap();
+        fs::write(
+            &path,
+            format!("{}\n\n---\n\n# Keep Me\n", orchestration_ref().unwrap()),
+        )
+        .unwrap();
 
         let changed = ensure_instruction_reference(&path, true).unwrap();
         assert!(!changed);
 
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with(ORCHESTRATION_REF));
+        assert!(content.starts_with(&orchestration_ref().unwrap()));
         assert!(content.contains("# Keep Me"));
     }
 
@@ -929,7 +952,7 @@ mod tests {
         assert!(changed);
 
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with(ORCHESTRATION_REF));
+        assert!(content.starts_with(&orchestration_ref().unwrap()));
         assert!(content.contains("---\ntitle: Keep\n---\n# Body"));
     }
 
@@ -937,9 +960,10 @@ mod tests {
     fn test_ensure_instruction_reference_preserves_body_reference_as_content() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("CLAUDE.md");
+        let legacy_ref = LEGACY_ORCHESTRATION_REF;
         fs::write(
             &path,
-            format!("# Body\n\nDocument mentions {ORCHESTRATION_REF} inline.\n"),
+            format!("# Body\n\nDocument mentions {legacy_ref} inline.\n"),
         )
         .unwrap();
 
@@ -947,8 +971,8 @@ mod tests {
         assert!(changed);
 
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with(ORCHESTRATION_REF));
-        assert!(content.contains(&format!("Document mentions {ORCHESTRATION_REF} inline.")));
+        assert!(content.starts_with(&orchestration_ref().unwrap()));
+        assert!(content.contains(&format!("Document mentions {legacy_ref} inline.")));
     }
 
     #[test]
@@ -967,7 +991,7 @@ mod tests {
     fn test_remove_instruction_reference_preserves_body_reference_without_prelude() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("CLAUDE.md");
-        let original = format!("# Body\n\nDocument mentions {ORCHESTRATION_REF} inline.\n");
+        let original = format!("# Body\n\nDocument mentions {LEGACY_ORCHESTRATION_REF} inline.\n");
         fs::write(&path, &original).unwrap();
 
         assert!(!remove_instruction_reference(&path).unwrap());
@@ -977,41 +1001,30 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_agents_reference_skips_existing_project_policy_without_force() {
+    fn test_ensure_instruction_reference_prepends_existing_agents_policy() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("AGENTS.md");
         fs::write(&path, "# Existing Policy\n").unwrap();
 
-        assert!(!ensure_agents_reference(&path, false).unwrap());
+        assert!(ensure_instruction_reference(&path, false).unwrap());
 
         let content = fs::read_to_string(&path).unwrap();
-        assert_eq!(content, "# Existing Policy\n");
+        assert!(content.starts_with(&orchestration_ref().unwrap()));
+        assert!(content.contains("# Existing Policy"));
     }
 
     #[test]
-    fn test_ensure_agents_reference_skips_body_reference_without_force() {
+    fn test_ensure_instruction_reference_preserves_body_reference_in_agents() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("AGENTS.md");
-        let original = format!("# Existing Policy\n\nMention {ORCHESTRATION_REF} only.\n");
+        let original = format!("# Existing Policy\n\nMention {LEGACY_ORCHESTRATION_REF} only.\n");
         fs::write(&path, &original).unwrap();
 
-        assert!(!ensure_agents_reference(&path, false).unwrap());
+        assert!(ensure_instruction_reference(&path, false).unwrap());
 
         let content = fs::read_to_string(&path).unwrap();
-        assert_eq!(content, original);
-    }
-
-    #[test]
-    fn test_ensure_agents_reference_force_preserves_existing_project_policy() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("AGENTS.md");
-        fs::write(&path, "# Existing Policy\n").unwrap();
-
-        assert!(ensure_agents_reference(&path, true).unwrap());
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(content.starts_with(ORCHESTRATION_REF));
-        assert!(content.contains("# Existing Policy"));
+        assert!(content.starts_with(&orchestration_ref().unwrap()));
+        assert!(content.contains(&format!("Mention {LEGACY_ORCHESTRATION_REF} only.")));
     }
 
     #[test]
@@ -1058,7 +1071,11 @@ mod tests {
     fn test_uninstall_removes_orchestration() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("CLAUDE.md");
-        fs::write(&path, format!("{ORCHESTRATION_REF}\n\n---\n\n# Existing\n")).unwrap();
+        fs::write(
+            &path,
+            format!("{}\n\n---\n\n# Existing\n", orchestration_ref().unwrap()),
+        )
+        .unwrap();
 
         assert!(remove_instruction_reference(&path).unwrap());
 
@@ -1067,11 +1084,18 @@ mod tests {
     }
 
     #[test]
-    fn test_uninstall_does_not_backup_unrelated_agents_policy() {
+    fn test_uninstall_removes_agents_reference_but_keeps_body() {
         let _guard = env_lock();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("AGENTS.md");
-        fs::write(&path, "# Existing Policy\n").unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{}\n\n---\n\n# Existing Policy\n",
+                orchestration_ref().unwrap()
+            ),
+        )
+        .unwrap();
 
         let previous_dir = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
@@ -1080,6 +1104,6 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(fs::read_to_string(&path).unwrap(), "# Existing Policy\n");
-        assert!(!tmp.path().join(".cduo").join("backups").exists());
+        assert!(tmp.path().join(".cduo").join("backups").exists());
     }
 }

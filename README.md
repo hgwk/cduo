@@ -120,8 +120,8 @@ can be changed with `CDUO_STOP_TOKEN`. Legacy `CDUO_STOP_RELAY` and
 | `cduo codex [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | Start a native pair with Codex in pane A |
 | `cduo doctor` | Check machine setup and current project readiness |
 | `cduo status [--verbose]` | Report native foreground-session behavior |
-| `cduo init` | Ensure the Claude `Stop` hook and add a local `@.cduo/orchestration.md` reference to `CLAUDE.md`; `AGENTS.md` is created only when missing |
-| `cduo init --force` | Refresh `.cduo/orchestration.md`, force `CLAUDE.md` / `AGENTS.md` references, and refresh `.claude/settings.local.json` |
+| `cduo init` | Ensure the Claude `Stop` hook and add absolute `~/.cduo/orchestration-guide.md` references to `AGENTS.md` and `CLAUDE.md` |
+| `cduo init --force` | Refresh `~/.cduo/orchestration-guide.md`, rewrite references, and refresh `.claude/settings.local.json` |
 | `cduo backup` | Back up orchestration-related files in the current project |
 | `cduo update` | Update to the latest version |
 | `cduo version` or `cduo --version` | Show the installed cduo version |
@@ -194,7 +194,7 @@ When Codex is selected, `cduo` checks that `codex` resolves to the official Open
 your-project/
 ├── .cduo/
 │   ├── backups/
-│   └── orchestration.md
+│   └── orchestration-guide.md
 ├── .claude/
 │   └── settings.local.json
 ├── AGENTS.md
@@ -204,8 +204,8 @@ your-project/
 
 Command behavior:
 
-- `cduo init` manages `.claude/settings.local.json`, `.cduo/orchestration.md`, and the `@.cduo/orchestration.md` reference in `CLAUDE.md`
-- `AGENTS.md` is created with the same reference when missing; an existing project `AGENTS.md` is left untouched unless it already contains cduo content or `--force` is used
+- `cduo init` manages `.claude/settings.local.json`, `~/.cduo/orchestration-guide.md`, and the absolute orchestration reference in `CLAUDE.md`
+- `AGENTS.md` and `CLAUDE.md` both get the same reference; existing body content is preserved below it
 - `cduo start`, `cduo claude ...`, and `cduo codex ...` do not modify project files
 - `cduo backup` writes timestamped copies into `.cduo/backups/`
 
@@ -251,8 +251,8 @@ cduo uninstall
 
 - Removes the Claude `Stop` hook from `.claude/settings.local.json`
 - Removes the bundled Claude permission default if it matches the cduo template
-- Removes the `@.cduo/orchestration.md` reference from `CLAUDE.md` and `AGENTS.md`
-- Removes `.cduo/orchestration.md`
+- Removes the cduo orchestration reference from `CLAUDE.md` and `AGENTS.md`
+- Removes legacy project-local `.cduo/orchestration.md` files when present
 
 Update the installed CLI:
 
@@ -287,7 +287,7 @@ The terminal starts in the wrong directory:
 Claude is missing the orchestration context:
 
 - Run `cduo init`
-- Check that `CLAUDE.md` contains `@.cduo/orchestration.md`
+- Check that `CLAUDE.md` contains an absolute `@.../.cduo/orchestration-guide.md` reference
 
 Claude shows `SessionStart:startup hook error` before the prompt:
 
@@ -338,7 +338,7 @@ cduo/
 │   └── transcripts/      # Agent transcript readers (claude, codex)
 ├── templates/
 │   ├── claude-settings.json
-│   └── orchestration.md
+│   └── orchestration-guide.md
 ├── npm/
 │   ├── install.js
 │   └── package.json

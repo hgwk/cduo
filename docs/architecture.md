@@ -56,11 +56,10 @@ markers in an agent answer also stop automatic relay.
 
 `cduo init` installs the Claude `Stop` hook into the project and writes the
 orchestration instructions in RTK-style referenced form: `CLAUDE.md` contains
-`@.cduo/orchestration.md`, while the full text lives in
-`.cduo/orchestration.md`. `AGENTS.md` is created with that reference only when
-missing; existing project policy files are left untouched unless they already
-contain cduo content or `--force` is used. Native `start` commands do not edit
-project files.
+an absolute `@.../.cduo/orchestration-guide.md` include, while the full text lives in
+`~/.cduo/orchestration-guide.md`. `AGENTS.md` and `CLAUDE.md` both get that reference,
+with existing body content preserved below it. Native `start` commands do not
+edit project files.
 
 ## Relay Flow
 
