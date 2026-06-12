@@ -214,6 +214,14 @@ fn parses_doctor_subcommands() {
         }
         _ => panic!("expected doctor command"),
     }
+
+    let cli = Cli::parse_from(["cduo", "doctor", "runtime"]);
+    match cli.command.unwrap() {
+        Commands::Doctor { command } => {
+            assert_eq!(command, Some(DoctorCommand::Runtime));
+        }
+        _ => panic!("expected doctor command"),
+    }
 }
 
 #[test]

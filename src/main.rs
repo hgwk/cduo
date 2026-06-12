@@ -9,6 +9,7 @@ mod native;
 mod pair_router;
 mod project;
 mod project_doctor;
+mod project_doctor_runtime;
 mod project_files;
 mod project_instructions;
 mod relay_core;
@@ -119,6 +120,7 @@ async fn main() {
                 None | Some(cli::DoctorCommand::Check) => project_doctor::doctor(),
                 Some(cli::DoctorCommand::Paths) => project_doctor::doctor_paths(),
                 Some(cli::DoctorCommand::Hooks) => project_doctor::doctor_hooks(),
+                Some(cli::DoctorCommand::Runtime) => project_doctor_runtime::doctor_runtime(),
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");

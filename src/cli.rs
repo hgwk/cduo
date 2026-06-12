@@ -148,6 +148,8 @@ pub enum DoctorCommand {
     Paths,
     #[command(about = "Print Claude hook locations and command counts")]
     Hooks,
+    #[command(about = "Print runtime paths, environment, and relay port status")]
+    Runtime,
 }
 
 #[cfg(test)]
