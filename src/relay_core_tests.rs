@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{HashMap, HashSet};
 
 #[test]
 fn counts_stop_hook_summary_with_json_spacing() {

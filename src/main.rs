@@ -13,6 +13,9 @@ mod project_doctor_runtime;
 mod project_files;
 mod project_instructions;
 mod relay_core;
+mod relay_core_discovery;
+mod relay_core_io;
+mod relay_core_prompt;
 mod session;
 mod transcripts;
 

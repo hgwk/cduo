@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::native::layout::pane_id_index;
 use crate::native::pane::{Pane, PaneId};
-use crate::native::runtime::{capture_line, write_error_footer};
+use crate::native::runtime_io::{capture_line, write_error_footer};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum BroadcastInputAction {
