@@ -2,9 +2,6 @@ use anyhow::{bail, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
 const ORCHESTRATION_START: &str = "<!-- CDUO_ORCHESTRATION_START -->";
 const ORCHESTRATION_END: &str = "<!-- CDUO_ORCHESTRATION_END -->";
 const LEGACY_ORCHESTRATION_REF: &str = "@.cduo/orchestration.md";
@@ -319,200 +316,6 @@ fn strip_leading_cduo_separator(content: &str) -> String {
     trimmed.to_string()
 }
 
-pub fn doctor() -> Result<()> {
-    let mut failed = false;
-    let cwd = std::env::current_dir()?;
-
-    println!("cduo doctor");
-
-    let platform = std::env::consts::OS;
-    let supported = platform == "macos" || platform == "linux";
-    println!(
-        "{} Platform: {platform} {}",
-        if supported { "✓" } else { "✗" },
-        if supported {
-            "(supported)"
-        } else {
-            "(not supported)"
-        }
-    );
-    if !supported {
-        failed = true;
-    }
-
-    let claude = which("claude");
-    println!(
-        "{} Claude CLI: {}",
-        if claude.is_some() { "✓" } else { "✗" },
-        claude.as_deref().unwrap_or("not found")
-    );
-    if claude.is_none() {
-        failed = true;
-    }
-
-    let codex = which("codex");
-    println!(
-        "{} Codex CLI: {}",
-        if codex.is_some() { "✓" } else { "!" },
-        codex.as_deref().unwrap_or("not found (optional)")
-    );
-
-    println!(
-        "{}",
-        claude_startup_hooks_report(&claude_settings_candidates(&cwd))
-    );
-
-    if failed {
-        bail!("Some checks failed. See above.");
-    }
-
-    println!("\n✅ cduo is ready.");
-    Ok(())
-}
-
-pub fn doctor_paths() -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let paths = project_paths(&cwd);
-
-    println!("cduo doctor paths");
-    println!("project root: {}", cwd.display());
-    println!("cduo home: {}", cduo_home_dir()?.display());
-    println!("home-local guide: {}", paths.orchestration_target.display());
-    println!(
-        "project Claude settings: {}",
-        paths.settings_target.display()
-    );
-    println!("AGENTS.md: {}", paths.agents_md_target.display());
-    println!("CLAUDE.md: {}", paths.claude_md_target.display());
-    println!(
-        "Claude CLI: {}",
-        which("claude").unwrap_or_else(|| "not found".to_string())
-    );
-    println!(
-        "Codex CLI: {}",
-        which("codex").unwrap_or_else(|| "not found".to_string())
-    );
-    Ok(())
-}
-
-pub fn doctor_hooks() -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let candidates = claude_settings_candidates(&cwd);
-
-    println!("cduo doctor hooks");
-    println!("{}", claude_startup_hooks_report(&candidates));
-    for path in candidates {
-        let Ok(content) = fs::read_to_string(&path) else {
-            println!("- {}: missing", display_path(&path));
-            continue;
-        };
-        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
-            println!("- {}: invalid JSON", display_path(&path));
-            continue;
-        };
-        println!(
-            "- {}: SessionStart={}, Stop={}",
-            display_path(&path),
-            count_hook_commands(&settings, "SessionStart"),
-            count_hook_commands(&settings, "Stop")
-        );
-    }
-    Ok(())
-}
-
-fn claude_settings_candidates(cwd: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![cwd.join(".claude").join("settings.local.json")];
-    if let Some(home) = std::env::var_os("HOME") {
-        let home_claude = PathBuf::from(home).join(".claude");
-        paths.push(home_claude.join("settings.json"));
-        paths.push(home_claude.join("settings.local.json"));
-    }
-    paths
-}
-
-fn claude_startup_hooks_report(paths: &[PathBuf]) -> String {
-    let mut found = Vec::new();
-    let mut invalid = Vec::new();
-    for path in paths {
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
-        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
-            invalid.push(display_path(path));
-            continue;
-        };
-        let count = count_hook_commands(&settings, "SessionStart");
-        if count > 0 {
-            found.push(format!("{} ({count})", display_path(path)));
-        }
-    }
-
-    let count = found
-        .iter()
-        .filter_map(|entry| {
-            entry
-                .rsplit_once('(')
-                .and_then(|(_, count)| count.trim_end_matches(')').parse::<usize>().ok())
-        })
-        .sum::<usize>();
-    let hooks = if found.is_empty() {
-        "! Claude startup hooks: none found in checked settings".to_string()
-    } else {
-        format!(
-            "! Claude startup hooks: found {} command(s) in {}",
-            count,
-            found.join(", ")
-        )
-    };
-    let hooks = if count > 1 {
-        format!(
-            "{hooks}\n  hint: multiple Claude SessionStart hooks can run duplicate startup work; review the listed settings file(s) and keep only intentional hooks. cduo relay uses the project Stop hook installed by `cduo init`."
-        )
-    } else {
-        hooks
-    };
-    if invalid.is_empty() {
-        hooks
-    } else {
-        format!("{hooks}; invalid JSON in {}", invalid.join(", "))
-    }
-}
-
-fn count_hook_commands(settings: &serde_json::Value, hook_name: &str) -> usize {
-    settings
-        .get("hooks")
-        .and_then(|hooks| hooks.get(hook_name))
-        .and_then(serde_json::Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| entry.get("hooks").and_then(serde_json::Value::as_array))
-                .map(|hooks| {
-                    hooks
-                        .iter()
-                        .filter(|hook| {
-                            hook.get("type").and_then(serde_json::Value::as_str) == Some("command")
-                                && hook
-                                    .get("command")
-                                    .and_then(serde_json::Value::as_str)
-                                    .is_some_and(|command| !command.trim().is_empty())
-                        })
-                        .count()
-                })
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
-fn display_path(path: &Path) -> String {
-    let Ok(cwd) = std::env::current_dir() else {
-        return path.display().to_string();
-    };
-    path.strip_prefix(&cwd)
-        .map(|relative| relative.display().to_string())
-        .unwrap_or_else(|_| path.display().to_string())
-}
-
 pub fn backup() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let paths = project_paths(&cwd);
@@ -661,36 +464,6 @@ fn remove_instruction_reference(path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-fn which(command: &str) -> Option<String> {
-    if command.contains(std::path::MAIN_SEPARATOR) {
-        return executable_path(Path::new(command)).map(|path| path.display().to_string());
-    }
-
-    std::env::var_os("PATH")?
-        .to_string_lossy()
-        .split(':')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| Path::new(segment).join(command))
-        .find_map(|path| executable_path(&path).map(|path| path.display().to_string()))
-}
-
-fn executable_path(path: &Path) -> Option<&Path> {
-    let metadata = fs::metadata(path).ok()?;
-    if !metadata.is_file() {
-        return None;
-    }
-
-    #[cfg(unix)]
-    {
-        (metadata.permissions().mode() & 0o111 != 0).then_some(path)
-    }
-
-    #[cfg(not(unix))]
-    {
-        Some(path)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,16 +473,6 @@ mod tests {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
     }
-
-    #[cfg(unix)]
-    fn make_executable(path: &Path) {
-        let mut permissions = fs::metadata(path).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).unwrap();
-    }
-
-    #[cfg(not(unix))]
-    fn make_executable(_path: &Path) {}
 
     #[test]
     fn test_ensure_stop_hook_creates_new() {
@@ -850,104 +613,6 @@ mod tests {
 
         assert!(remove_cduo_stop_hooks_from_settings(&mut settings));
         assert!(settings.get("hooks").is_none());
-    }
-
-    #[test]
-    fn counts_only_session_start_command_hooks() {
-        let settings = serde_json::json!({
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "matcher": "startup",
-                        "hooks": [
-                            {"type": "command", "command": "claude-mem"},
-                            {"type": "command", "command": "  "},
-                            {"type": "other", "command": "ignored"}
-                        ]
-                    }
-                ],
-                "Stop": [
-                    {
-                        "matcher": ".*",
-                        "hooks": [
-                            {"type": "command", "command": "cduo stop"}
-                        ]
-                    }
-                ]
-            }
-        });
-
-        assert_eq!(count_hook_commands(&settings, "SessionStart"), 1);
-        assert_eq!(count_hook_commands(&settings, "Stop"), 1);
-    }
-
-    #[test]
-    fn startup_hook_report_identifies_project_settings() {
-        let _guard = env_lock();
-        let tmp = tempfile::tempdir().unwrap();
-        let settings_path = tmp.path().join(".claude").join("settings.local.json");
-        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-        fs::write(
-            &settings_path,
-            serde_json::json!({
-                "hooks": {
-                    "SessionStart": [{
-                        "matcher": "startup",
-                        "hooks": [{"type": "command", "command": "claude-mem"}]
-                    }]
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        let report = claude_startup_hooks_report(&[settings_path]);
-
-        assert!(report.contains("Claude startup hooks: found 1 command(s)"));
-        assert!(report.contains("settings.local.json"));
-    }
-
-    #[test]
-    fn startup_hook_report_warns_about_multiple_hooks() {
-        let tmp = tempfile::tempdir().unwrap();
-        let settings_path = tmp.path().join(".claude").join("settings.json");
-        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-        fs::write(
-            &settings_path,
-            serde_json::json!({
-                "hooks": {
-                    "SessionStart": [{
-                        "matcher": "startup",
-                        "hooks": [
-                            {"type": "command", "command": "first"},
-                            {"type": "command", "command": "second"}
-                        ]
-                    }]
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        let report = claude_startup_hooks_report(&[settings_path]);
-
-        assert!(report.contains("Claude startup hooks: found 2 command(s)"));
-        assert!(report.contains("multiple Claude SessionStart hooks"));
-        assert!(report.contains("cduo init"));
-    }
-
-    #[test]
-    fn startup_hook_report_separates_invalid_json_from_hook_count() {
-        let tmp = tempfile::tempdir().unwrap();
-        let settings_path = tmp.path().join(".claude").join("settings.local.json");
-        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-        fs::write(&settings_path, "{not json").unwrap();
-
-        let report = claude_startup_hooks_report(&[settings_path]);
-
-        assert!(report.contains("Claude startup hooks: none found"));
-        assert!(report.contains("invalid JSON in"));
-        assert!(!report.contains("found 0 command(s)"));
     }
 
     #[test]
@@ -1112,46 +777,6 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.starts_with(&orchestration_ref().unwrap()));
         assert!(content.contains(&format!("Mention {LEGACY_ORCHESTRATION_REF} only.")));
-    }
-
-    #[test]
-    fn which_finds_executable_on_path_without_shell() {
-        let _guard = env_lock();
-        let tmp = tempfile::tempdir().unwrap();
-        let command_path = tmp.path().join("fake-cduo-command");
-        fs::write(&command_path, "#!/bin/sh\nexit 0\n").unwrap();
-        make_executable(&command_path);
-        let previous_path = std::env::var_os("PATH");
-        std::env::set_var("PATH", tmp.path());
-
-        assert_eq!(
-            which("fake-cduo-command").as_deref(),
-            Some(command_path.to_str().unwrap())
-        );
-
-        if let Some(path) = previous_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
-    }
-
-    #[test]
-    fn which_ignores_non_executable_files() {
-        let _guard = env_lock();
-        let tmp = tempfile::tempdir().unwrap();
-        let command_path = tmp.path().join("fake-cduo-command");
-        fs::write(&command_path, "not executable").unwrap();
-        let previous_path = std::env::var_os("PATH");
-        std::env::set_var("PATH", tmp.path());
-
-        assert_eq!(which("fake-cduo-command"), None);
-
-        if let Some(path) = previous_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
     }
 
     #[test]

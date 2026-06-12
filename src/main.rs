@@ -8,6 +8,7 @@ mod message_bus;
 mod native;
 mod pair_router;
 mod project;
+mod project_doctor;
 mod relay_core;
 mod session;
 mod transcripts;
@@ -113,9 +114,9 @@ async fn main() {
         }
         Commands::Doctor { command } => {
             let result = match command {
-                None | Some(cli::DoctorCommand::Check) => project::doctor(),
-                Some(cli::DoctorCommand::Paths) => project::doctor_paths(),
-                Some(cli::DoctorCommand::Hooks) => project::doctor_hooks(),
+                None | Some(cli::DoctorCommand::Check) => project_doctor::doctor(),
+                Some(cli::DoctorCommand::Paths) => project_doctor::doctor_paths(),
+                Some(cli::DoctorCommand::Hooks) => project_doctor::doctor_hooks(),
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
