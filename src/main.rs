@@ -9,6 +9,8 @@ mod native;
 mod pair_router;
 mod project;
 mod project_doctor;
+mod project_files;
+mod project_instructions;
 mod relay_core;
 mod session;
 mod transcripts;

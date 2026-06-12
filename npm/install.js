@@ -1,4 +1,5 @@
 const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -30,6 +31,7 @@ const url = target
   : null;
 const binDir = path.join(__dirname, 'bin');
 const binPath = path.join(binDir, 'cduo');
+const sumsUrl = `https://github.com/hgwk/cduo/releases/download/v${version}/SHA256SUMS`;
 let file = null;
 
 function log(line = '') {
@@ -84,16 +86,66 @@ function fail(err) {
   process.exit(1);
 }
 
+function getText(downloadUrl, redirects = 0) {
+  if (redirects > 5) {
+    return Promise.reject(new Error('Too many redirects'));
+  }
+  return new Promise((resolve, reject) => {
+    https.get(downloadUrl, (response) => {
+      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+        const location = response.headers.location;
+        response.resume();
+        if (!location) {
+          reject(new Error('Redirect response did not include a location header'));
+          return;
+        }
+        getText(location, redirects + 1).then(resolve, reject);
+        return;
+      }
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`GitHub release returned HTTP ${response.statusCode}`));
+        return;
+      }
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => resolve(body));
+      response.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+async function verifyChecksum() {
+  const sums = await getText(sumsUrl);
+  const expected = sums
+    .split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/))
+    .find((parts) => parts[1] === `cduo-${target}`);
+  if (!expected) {
+    throw new Error(`Checksum missing for cduo-${target}`);
+  }
+  const actual = crypto.createHash('sha256').update(fs.readFileSync(binPath)).digest('hex');
+  if (actual !== expected[0]) {
+    throw new Error(`Checksum mismatch for cduo-${target}`);
+  }
+}
+
 function completeInstall() {
-  file.close(() => {
+  file.close(async () => {
     finishProgress();
-    fs.chmodSync(binPath, 0o755);
-    step(3, `ready ${color.green('cduo')}`);
-    log('');
-    log(`${color.green('Installed.')} Try: ${color.cyan('cduo claude codex')}`);
-    log(color.dim('Switch: Ctrl-W    Scroll: PageUp/PageDown    Quit: Ctrl-Q'));
-    log(color.dim('Drag inside one pane to copy text.'));
-    log('');
+    try {
+      await verifyChecksum();
+      fs.chmodSync(binPath, 0o755);
+      step(3, `ready ${color.green('cduo')}`);
+      log('');
+      log(`${color.green('Installed.')} Try: ${color.cyan('cduo claude codex')}`);
+      log(color.dim('Switch: Ctrl-W    Scroll: PageUp/PageDown    Quit: Ctrl-Q'));
+      log(color.dim('Drag inside one pane to copy text.'));
+      log('');
+    } catch (err) {
+      fail(err);
+    }
   });
 }
 

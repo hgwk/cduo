@@ -1,4 +1,5 @@
 use super::*;
+use crate::message_bus::PublishResult;
 
 include!("relay_tests_part1.rs");
 include!("relay_tests_part2.rs");

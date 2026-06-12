@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, MouseButton, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -25,7 +25,6 @@ use tokio::sync::{broadcast, mpsc};
 use crate::cli::{Agent, SplitLayout};
 use crate::hook::{self, HookEvent};
 use crate::native::access::{agent_args, agent_program, AccessMode};
-use crate::native::footer::{mode_glyph, pingpong_dot, queue_gauge_glyph, uptime_label};
 use crate::native::input::{classify_key, key_to_bytes, GlobalAction};
 use crate::native::layout::{
     focus_index, pane_id_index, pane_layouts_for_view, resize_panes_for_view, split_label,
@@ -34,6 +33,8 @@ use crate::native::layout::{
 use crate::native::pane::{Focus, Pane, PaneId, PaneSpawnOptions};
 use crate::native::relay;
 use crate::native::render::draw;
+use crate::native::runtime_metadata::*;
+use crate::native::runtime_status::*;
 use crate::native::selection::{
     copy_to_clipboard_osc52, mouse_cell, mouse_cell_in_pane_clamped, mouse_pane, selected_text,
     MouseSelection,
@@ -43,7 +44,6 @@ use crate::native::ui::pane_pty_size;
 const FRAME_BUDGET_MS: u64 = 16;
 const POLL_INTERVAL_MS: u64 = 8;
 const SCROLL_LINES: usize = 5;
-const LOG_TICKER_STATUS_RESERVE: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
@@ -1014,257 +1014,6 @@ fn mouse_wheel_bytes(kind: MouseEventKind, row: u16, col: u16) -> Option<Vec<u8>
     Some(format!("\x1b[<{button};{};{}M", col + 1, row + 1).into_bytes())
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum BroadcastInputAction {
-    Editing,
-    Cancel,
-    Submit(String),
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum MetadataInputAction {
-    Editing,
-    Cancel,
-    Submit(String),
-}
-
-fn handle_broadcast_key(key: KeyEvent, buffer: &mut String) -> BroadcastInputAction {
-    match key.code {
-        KeyCode::Esc => BroadcastInputAction::Cancel,
-        KeyCode::Char('y') | KeyCode::Char('Y')
-            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            BroadcastInputAction::Cancel
-        }
-        KeyCode::Enter => {
-            let prompt = buffer.trim().to_string();
-            if prompt.is_empty() {
-                BroadcastInputAction::Cancel
-            } else {
-                BroadcastInputAction::Submit(prompt)
-            }
-        }
-        KeyCode::Backspace => {
-            buffer.pop();
-            BroadcastInputAction::Editing
-        }
-        KeyCode::Char(c)
-            if !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
-        {
-            buffer.push(c);
-            BroadcastInputAction::Editing
-        }
-        _ => BroadcastInputAction::Editing,
-    }
-}
-
-fn handle_metadata_key(key: KeyEvent, buffer: &mut String) -> MetadataInputAction {
-    match key.code {
-        KeyCode::Esc => MetadataInputAction::Cancel,
-        KeyCode::Char('n') | KeyCode::Char('N')
-            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-        {
-            MetadataInputAction::Cancel
-        }
-        KeyCode::Enter => {
-            let input = buffer.trim().to_string();
-            if input.is_empty() {
-                MetadataInputAction::Cancel
-            } else {
-                MetadataInputAction::Submit(input)
-            }
-        }
-        KeyCode::Backspace => {
-            buffer.pop();
-            MetadataInputAction::Editing
-        }
-        KeyCode::Char(c)
-            if !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) =>
-        {
-            buffer.push(c);
-            MetadataInputAction::Editing
-        }
-        _ => MetadataInputAction::Editing,
-    }
-}
-
-fn broadcast_prompt_bytes(prompt: &str) -> Vec<u8> {
-    format!("User says: {prompt}\r").into_bytes()
-}
-
-fn send_broadcast_prompt(
-    panes: &mut [Pane; 2],
-    prompt: &str,
-    input_buf: &mut HashMap<PaneId, Vec<u8>>,
-    input_tx: &mpsc::Sender<(String, String)>,
-    footer_msg: &mut String,
-    error_set_at: &mut Option<Instant>,
-    error_raw_msg: &mut String,
-) {
-    let bytes = broadcast_prompt_bytes(prompt);
-    let mut sent = 0;
-    for pane in [PaneId::A, PaneId::B] {
-        let idx = pane_id_index(pane);
-        match panes[idx].write(&bytes) {
-            Ok(()) => {
-                capture_line(pane, &bytes, input_buf, input_tx);
-                sent += 1;
-            }
-            Err(err) => {
-                *footer_msg = write_error_footer(pane.label(), &err);
-                *error_raw_msg = footer_msg.clone();
-                *error_set_at = Some(Instant::now());
-                return;
-            }
-        }
-    }
-
-    *footer_msg = format!(" broadcast sent to {sent} panes · relay paused · Ctrl-P: resume relay ");
-    *error_set_at = None;
-}
-
-fn broadcast_input_footer(buffer: &str, elapsed: Duration) -> String {
-    let caret = crate::native::footer::broadcast_caret_glyph(elapsed);
-    format!(" broadcast> {buffer}{caret} · Enter: send · Esc: cancel ")
-}
-
-fn metadata_input_footer(buffer: &str) -> String {
-    format!(" metadata> {buffer} · Enter: apply · Esc: cancel ")
-}
-
-fn current_metadata_input(panes: &[Pane; 2]) -> String {
-    metadata_input_value(
-        panes[0].session_name.as_deref(),
-        panes[0].role.as_deref(),
-        panes[1].role.as_deref(),
-    )
-}
-
-fn metadata_input_value(
-    session_name: Option<&str>,
-    role_a: Option<&str>,
-    role_b: Option<&str>,
-) -> String {
-    let session = format_metadata_value(session_name);
-    let role_a = format_metadata_value(role_a);
-    let role_b = format_metadata_value(role_b);
-    format!("session={session} a={role_a} b={role_b}")
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct MetadataUpdate {
-    session_name: Option<Option<String>>,
-    role_a: Option<Option<String>>,
-    role_b: Option<Option<String>>,
-}
-
-fn parse_metadata_update(input: &str) -> Result<MetadataUpdate, String> {
-    let mut update = MetadataUpdate::default();
-    for token in split_metadata_tokens(input)? {
-        let Some((key, value)) = token.split_once('=') else {
-            return Err(format!("expected key=value, got '{token}'"));
-        };
-        let value = metadata_value(value);
-        match key {
-            "session" | "name" | "session-name" | "session_name" => {
-                update.session_name = Some(value);
-            }
-            "a" | "role-a" | "role_a" => {
-                update.role_a = Some(value);
-            }
-            "b" | "role-b" | "role_b" => {
-                update.role_b = Some(value);
-            }
-            _ => return Err(format!("unknown key '{key}'")),
-        }
-    }
-    if update == MetadataUpdate::default() {
-        return Err("no metadata fields provided".to_string());
-    }
-    Ok(update)
-}
-
-fn split_metadata_tokens(input: &str) -> Result<Vec<String>, String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut chars = input.chars().peekable();
-    let mut in_quotes = false;
-    let mut escaped = false;
-
-    while let Some(ch) = chars.next() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_quotes => escaped = true,
-            '"' => in_quotes = !in_quotes,
-            ch if ch.is_whitespace() && !in_quotes => {
-                if !current.is_empty() {
-                    tokens.push(std::mem::take(&mut current));
-                }
-                while chars.peek().is_some_and(|next| next.is_whitespace()) {
-                    chars.next();
-                }
-            }
-            _ => current.push(ch),
-        }
-    }
-    if escaped {
-        current.push('\\');
-    }
-    if in_quotes {
-        return Err("unterminated quoted metadata value".to_string());
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    Ok(tokens)
-}
-
-fn metadata_value(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() || value == "-" || value.eq_ignore_ascii_case("none") {
-        None
-    } else {
-        Some(value.to_string())
-    }
-}
-
-fn format_metadata_value(value: Option<&str>) -> String {
-    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
-        return "-".to_string();
-    };
-    if value
-        .chars()
-        .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '\\' | '='))
-    {
-        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        value.to_string()
-    }
-}
-
-fn apply_metadata_update(panes: &mut [Pane; 2], update: MetadataUpdate) -> String {
-    if let Some(session_name) = update.session_name {
-        for pane in panes.iter_mut() {
-            pane.session_name = session_name.clone();
-        }
-    }
-    if let Some(role) = update.role_a {
-        panes[0].role = role;
-    }
-    if let Some(role) = update.role_b {
-        panes[1].role = role;
-    }
-    format!(" metadata updated · {} ", current_metadata_input(panes))
-}
-
 fn send_control_or_footer(
     control_tx: &mpsc::Sender<relay::RelayControl>,
     control: relay::RelayControl,
@@ -1276,152 +1025,8 @@ fn send_control_or_footer(
     }
 }
 
-fn write_error_footer(target: &str, err: &dyn std::fmt::Display) -> String {
+pub(super) fn write_error_footer(target: &str, err: &dyn std::fmt::Display) -> String {
     format!(" relay write failed for pane {target} · {err} ")
-}
-
-fn pause_footer(queued_writes: usize) -> String {
-    format!(" relay paused · queued writes: {queued_writes} · Ctrl-P: resume ")
-}
-
-fn relay_reset_footer() -> String {
-    " relay restarted · auto relay ON ".to_string()
-}
-
-fn clear_paused_writes(paused_writes: &mut VecDeque<(String, Vec<u8>)>) -> usize {
-    let cleared = paused_writes.len();
-    paused_writes.clear();
-    cleared
-}
-
-fn route_footer(route: &str, enabled: bool) -> String {
-    let state = if enabled { "ON" } else { "OFF" };
-    let route = match route {
-        "A→B" => "A=>B",
-        "B→A" => "B=>A",
-        other => other,
-    };
-    format!(" route[{route}:{state}] · Ctrl-1: A=>B · Ctrl-2: B=>A ")
-}
-
-struct TrafficCounters {
-    a_to_b_bytes: u64,
-    b_to_a_bytes: u64,
-    last_a_to_b_at: Option<Instant>,
-    last_b_to_a_at: Option<Instant>,
-    samples_a_to_b: std::collections::VecDeque<u64>,
-    samples_b_to_a: std::collections::VecDeque<u64>,
-    last_sample_at: Instant,
-}
-
-fn record_relay_traffic(traffic: &mut TrafficCounters, target: &str, byte_len: u64, now: Instant) {
-    match target {
-        "b" => {
-            traffic.a_to_b_bytes += byte_len;
-            traffic.last_a_to_b_at = Some(now);
-        }
-        "a" => {
-            traffic.b_to_a_bytes += byte_len;
-            traffic.last_b_to_a_at = Some(now);
-        }
-        _ => {}
-    }
-}
-
-fn log_ticker_footer(line: &str, offset: usize, footer_width: u16) -> String {
-    let chrome_width = " log:  ".chars().count();
-    let display_width =
-        usize::from(footer_width).saturating_sub(LOG_TICKER_STATUS_RESERVE + chrome_width);
-    let window = if display_width == 0 {
-        String::new()
-    } else {
-        crate::native::footer::marquee_window(line, display_width, offset)
-    };
-    format!(" log: {window} ")
-}
-
-struct RelayStatusView<'a> {
-    message: &'a str,
-    relay_paused: bool,
-    queued_writes: usize,
-    a_to_b_enabled: bool,
-    b_to_a_enabled: bool,
-    relay_auto_stopped: bool,
-    heartbeat: bool,
-    elapsed: Duration,
-    traffic: &'a TrafficCounters,
-    now: Instant,
-}
-
-fn footer_with_relay_status(view: RelayStatusView<'_>) -> String {
-    use crate::native::footer::{
-        activity_dot, route_status_token, stop_warn_glyph, traffic_sparkline,
-    };
-    let RelayStatusView {
-        message,
-        relay_paused,
-        queued_writes,
-        a_to_b_enabled,
-        b_to_a_enabled,
-        relay_auto_stopped,
-        heartbeat,
-        elapsed,
-        traffic,
-        now,
-    } = view;
-
-    let mode = if relay_auto_stopped {
-        "STOP"
-    } else if relay_paused {
-        "PAUSE"
-    } else {
-        "ON"
-    };
-    let glyph = mode_glyph(mode);
-    let warn = if relay_auto_stopped {
-        stop_warn_glyph(elapsed)
-    } else {
-        ""
-    };
-    let pulse = if relay_paused && !relay_auto_stopped {
-        if heartbeat {
-            " ●"
-        } else {
-            " ○"
-        }
-    } else {
-        ""
-    };
-    let gauge = queue_gauge_glyph(queued_writes);
-
-    let pulse_a_to_b = traffic
-        .last_a_to_b_at
-        .map(|t| now.duration_since(t) < Duration::from_millis(200))
-        .unwrap_or(false);
-    let pulse_b_to_a = traffic
-        .last_b_to_a_at
-        .map(|t| now.duration_since(t) < Duration::from_millis(200))
-        .unwrap_or(false);
-    let spark_ab_vec: Vec<u64> = traffic.samples_a_to_b.iter().copied().collect();
-    let spark_ba_vec: Vec<u64> = traffic.samples_b_to_a.iter().copied().collect();
-    let spark_ab = traffic_sparkline(&spark_ab_vec);
-    let spark_ba = traffic_sparkline(&spark_ba_vec);
-    let act_a = activity_dot(*traffic.samples_b_to_a.back().unwrap_or(&0));
-    let act_b = activity_dot(*traffic.samples_a_to_b.back().unwrap_or(&0));
-
-    let routes = if !relay_paused && !relay_auto_stopped && a_to_b_enabled && b_to_a_enabled {
-        let pp = pingpong_dot(elapsed);
-        format!("A{act_a} {spark_ba} {pp} {spark_ab} {act_b}B")
-    } else {
-        let route_ab = route_status_token("ab", a_to_b_enabled, pulse_a_to_b);
-        let route_ba = route_status_token("ba", b_to_a_enabled, pulse_b_to_a);
-        format!("A{act_a} {route_ba} | {route_ab} {act_b}B")
-    };
-    let uptime = uptime_label(elapsed);
-    format!(
-        " {glyph}{warn} relay[{mode}]{pulse} · q[{queued_writes}]{gauge} · {routes} · {} · up {uptime}",
-        message.trim()
-    )
 }
 
 fn recent_log_footer(log_path: &std::path::Path) -> String {
@@ -1447,7 +1052,7 @@ fn recent_log_footer(log_path: &std::path::Path) -> String {
 /// Mirror forwarded keystrokes for the focused pane and emit the buffered text
 /// as a (pane_id, line) submission whenever a CR or LF byte goes through. The
 /// relay loop uses these to match codex transcripts to their owning pane.
-fn capture_line(
+pub(super) fn capture_line(
     pane: PaneId,
     bytes: &[u8],
     buf: &mut HashMap<PaneId, Vec<u8>>,
