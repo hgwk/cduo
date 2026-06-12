@@ -125,6 +125,8 @@ can be changed with `CDUO_STOP_TOKEN`. Legacy `CDUO_STOP_RELAY` and
 | `cduo claude [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | Start a native pair with Claude in pane A |
 | `cduo codex [claude\|codex] [--split columns\|rows] [--yolo\|--full-access] [--new]` | Start a native pair with Codex in pane A |
 | `cduo doctor` | Check machine setup and current project readiness |
+| `cduo doctor paths` | Print cduo, Claude, Codex, and guide paths |
+| `cduo doctor hooks` | Print Claude hook settings files and command counts |
 | `cduo status [--verbose]` | Report native foreground-session behavior |
 | `cduo init` | Ensure the Claude `Stop` hook and add absolute `~/.cduo/orchestration-guide.md` references to `AGENTS.md` and `CLAUDE.md` |
 | `cduo init --force` | Refresh `~/.cduo/orchestration-guide.md`, rewrite references, and refresh `.claude/settings.local.json` |

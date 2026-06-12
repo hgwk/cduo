@@ -108,7 +108,10 @@ pub enum Commands {
     },
 
     #[command(about = "Check setup")]
-    Doctor,
+    Doctor {
+        #[command(subcommand)]
+        command: Option<DoctorCommand>,
+    },
 
     #[command(about = "Backup orchestration files")]
     Backup,
@@ -135,6 +138,16 @@ pub enum SplitLayout {
     #[default]
     Columns,
     Rows,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Subcommand)]
+pub enum DoctorCommand {
+    #[command(about = "Run the standard readiness check")]
+    Check,
+    #[command(about = "Print cduo, Claude, Codex, and project guide paths")]
+    Paths,
+    #[command(about = "Print Claude hook locations and command counts")]
+    Hooks,
 }
 
 #[cfg(test)]
@@ -335,6 +348,25 @@ mod tests {
                 assert_eq!(role_b.as_deref(), Some("builder"));
             }
             _ => panic!("expected codex command"),
+        }
+    }
+
+    #[test]
+    fn parses_doctor_subcommands() {
+        let cli = Cli::parse_from(["cduo", "doctor", "paths"]);
+        match cli.command.unwrap() {
+            Commands::Doctor { command } => {
+                assert_eq!(command, Some(DoctorCommand::Paths));
+            }
+            _ => panic!("expected doctor command"),
+        }
+
+        let cli = Cli::parse_from(["cduo", "doctor"]);
+        match cli.command.unwrap() {
+            Commands::Doctor { command } => {
+                assert_eq!(command, None);
+            }
+            _ => panic!("expected doctor command"),
         }
     }
 

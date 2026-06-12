@@ -111,8 +111,13 @@ async fn main() {
                 process::exit(1);
             }
         }
-        Commands::Doctor => {
-            if let Err(e) = project::doctor() {
+        Commands::Doctor { command } => {
+            let result = match command {
+                None | Some(cli::DoctorCommand::Check) => project::doctor(),
+                Some(cli::DoctorCommand::Paths) => project::doctor_paths(),
+                Some(cli::DoctorCommand::Hooks) => project::doctor_hooks(),
+            };
+            if let Err(e) = result {
                 eprintln!("Error: {e}");
                 process::exit(1);
             }

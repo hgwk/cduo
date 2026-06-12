@@ -370,6 +370,56 @@ pub fn doctor() -> Result<()> {
     Ok(())
 }
 
+pub fn doctor_paths() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let paths = project_paths(&cwd);
+
+    println!("cduo doctor paths");
+    println!("project root: {}", cwd.display());
+    println!("cduo home: {}", cduo_home_dir()?.display());
+    println!("home-local guide: {}", paths.orchestration_target.display());
+    println!(
+        "project Claude settings: {}",
+        paths.settings_target.display()
+    );
+    println!("AGENTS.md: {}", paths.agents_md_target.display());
+    println!("CLAUDE.md: {}", paths.claude_md_target.display());
+    println!(
+        "Claude CLI: {}",
+        which("claude").unwrap_or_else(|| "not found".to_string())
+    );
+    println!(
+        "Codex CLI: {}",
+        which("codex").unwrap_or_else(|| "not found".to_string())
+    );
+    Ok(())
+}
+
+pub fn doctor_hooks() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let candidates = claude_settings_candidates(&cwd);
+
+    println!("cduo doctor hooks");
+    println!("{}", claude_startup_hooks_report(&candidates));
+    for path in candidates {
+        let Ok(content) = fs::read_to_string(&path) else {
+            println!("- {}: missing", display_path(&path));
+            continue;
+        };
+        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+            println!("- {}: invalid JSON", display_path(&path));
+            continue;
+        };
+        println!(
+            "- {}: SessionStart={}, Stop={}",
+            display_path(&path),
+            count_hook_commands(&settings, "SessionStart"),
+            count_hook_commands(&settings, "Stop")
+        );
+    }
+    Ok(())
+}
+
 fn claude_settings_candidates(cwd: &Path) -> Vec<PathBuf> {
     let mut paths = vec![cwd.join(".claude").join("settings.local.json")];
     if let Some(home) = std::env::var_os("HOME") {
