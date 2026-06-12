@@ -397,21 +397,29 @@ fn claude_startup_hooks_report(paths: &[PathBuf]) -> String {
         }
     }
 
+    let count = found
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .rsplit_once('(')
+                .and_then(|(_, count)| count.trim_end_matches(')').parse::<usize>().ok())
+        })
+        .sum::<usize>();
     let hooks = if found.is_empty() {
         "! Claude startup hooks: none found in checked settings".to_string()
     } else {
         format!(
             "! Claude startup hooks: found {} command(s) in {}",
-            found
-                .iter()
-                .filter_map(|entry| {
-                    entry
-                        .rsplit_once('(')
-                        .and_then(|(_, count)| count.trim_end_matches(')').parse::<usize>().ok())
-                })
-                .sum::<usize>(),
+            count,
             found.join(", ")
         )
+    };
+    let hooks = if count > 1 {
+        format!(
+            "{hooks}\n  hint: multiple Claude SessionStart hooks can run duplicate startup work; review the listed settings file(s) and keep only intentional hooks. cduo relay uses the project Stop hook installed by `cduo init`."
+        )
+    } else {
+        hooks
     };
     if invalid.is_empty() {
         hooks
@@ -847,6 +855,35 @@ mod tests {
 
         assert!(report.contains("Claude startup hooks: found 1 command(s)"));
         assert!(report.contains("settings.local.json"));
+    }
+
+    #[test]
+    fn startup_hook_report_warns_about_multiple_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings_path = tmp.path().join(".claude").join("settings.json");
+        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        fs::write(
+            &settings_path,
+            serde_json::json!({
+                "hooks": {
+                    "SessionStart": [{
+                        "matcher": "startup",
+                        "hooks": [
+                            {"type": "command", "command": "first"},
+                            {"type": "command", "command": "second"}
+                        ]
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let report = claude_startup_hooks_report(&[settings_path]);
+
+        assert!(report.contains("Claude startup hooks: found 2 command(s)"));
+        assert!(report.contains("multiple Claude SessionStart hooks"));
+        assert!(report.contains("cduo init"));
     }
 
     #[test]
