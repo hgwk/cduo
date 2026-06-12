@@ -1,0 +1,4 @@
+[alias]
+test-fast = "test -- --skip native::relay"
+test-relay = "test native::relay"
+test-native = "test native::runtime"

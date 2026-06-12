@@ -354,9 +354,15 @@ cargo build --release
 
 ```bash
 cargo test
+cargo test-fast
+cargo test-relay
+cargo test-native
 ```
 
-현재 자동 검증은 `cargo test`만 사용합니다 (단위 테스트 + `src/native/relay.rs`의 인프로세스 relay 통합 테스트). foreground native 런타임을 대상으로 한 전체 TUI E2E 하네스는 현재 연결되어 있지 않습니다.
+현재 자동 검증은 `cargo test`입니다. 빠른 로컬 확인에는 느린 relay
+통합 테스트를 건너뛰는 `cargo test-fast`를 쓰고, relay/runtime만 볼 때는
+`cargo test-relay`, `cargo test-native`를 씁니다. foreground native 런타임을
+대상으로 한 전체 TUI E2E 하네스는 현재 연결되어 있지 않습니다.
 
 릴리즈 바이너리는 `target/release/cduo`에 생성됩니다.
 
@@ -369,6 +375,7 @@ cduo/
 │   ├── cli.rs            # 명령 정의/파싱
 │   ├── native/           # native split-pane TUI 런타임 (PTY + ratatui + relay 루프)
 │   │   ├── runtime.rs    # 두 pane 메인 루프; hook 서버와 relay 태스크 기동
+│   │   ├── relay_tests.rs # 인프로세스 relay integration test
 │   │   ├── pane.rs       # pane별 PTY + vt100 파서
 │   │   ├── ui.rs         # vt100 → ratatui 렌더링
 │   │   ├── input.rs      # 키 인코딩과 전역 동작 분류

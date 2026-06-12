@@ -337,9 +337,16 @@ Run tests:
 
 ```bash
 cargo test
+cargo test-fast
+cargo test-relay
+cargo test-native
 ```
 
-Current automated coverage is `cargo test` (unit + in-process relay integration tests under `src/native/relay.rs`). A full TUI end-to-end harness for the foreground native runtime is not currently wired.
+Current automated coverage is `cargo test` (unit + in-process relay integration
+tests). `cargo test-fast` skips the slower relay integration tests for quick
+local feedback; `cargo test-relay` and `cargo test-native` run the focused
+relay/runtime suites. A full TUI end-to-end harness for the foreground native
+runtime is not currently wired.
 
 The release binary will be at `target/release/cduo`.
 
@@ -352,6 +359,7 @@ cduo/
 │   ├── cli.rs            # Command definitions and parsing
 │   ├── native/           # Native split-pane TUI runtime (PTY + ratatui + relay loop)
 │   │   ├── runtime.rs    # Two-pane main loop; spawns hook server and relay task
+│   │   ├── relay_tests.rs # In-process relay integration tests
 │   │   ├── pane.rs       # Per-pane PTY + vt100 parser
 │   │   ├── ui.rs         # vt100 → ratatui rendering
 │   │   ├── input.rs      # Key encoding and global action classification
