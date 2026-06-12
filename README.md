@@ -86,6 +86,12 @@ cduo doctor
 cduo start claude codex
 ```
 
+## Companion Tool Roles
+
+- `cduo doctor` checks pair-agent runtime setup and project hook readiness.
+- `ldgr verify` checks ledger lifecycle, audit, worklog, and Git evidence.
+- `hrns audit` checks repository structure, docs, config, and code guardrails.
+
 Native UI controls:
 
 - `Ctrl-W`: switch focus between panes
@@ -193,8 +199,7 @@ When Codex is selected, `cduo` checks that `codex` resolves to the official Open
 ```text
 your-project/
 ├── .cduo/
-│   ├── backups/
-│   └── orchestration-guide.md
+│   └── backups/
 ├── .claude/
 │   └── settings.local.json
 ├── AGENTS.md
@@ -204,7 +209,7 @@ your-project/
 
 Command behavior:
 
-- `cduo init` manages `.claude/settings.local.json`, `~/.cduo/orchestration-guide.md`, and the absolute orchestration reference in `CLAUDE.md`
+- `cduo init` manages `.claude/settings.local.json`, `~/.cduo/orchestration-guide.md`, and the absolute orchestration reference in root policy files
 - `AGENTS.md` and `CLAUDE.md` both get the same reference; existing body content is preserved below it
 - `cduo start`, `cduo claude ...`, and `cduo codex ...` do not modify project files
 - `cduo backup` writes timestamped copies into `.cduo/backups/`
@@ -262,6 +267,27 @@ cduo update
 
 `cduo update` downloads the latest binary from GitHub Releases.
 
+## Local Install Convention
+
+For local development and manual installs, keep the real executable at:
+
+```bash
+~/.local/bin/cduo
+```
+
+If another PATH directory must expose `cduo`, prefer a symlink back to
+`~/.local/bin/cduo` instead of copying multiple binaries.
+
+## Agent Guide Pointer
+
+`cduo init` follows the same guide-pointer convention as `ldgr` and `hrns`:
+
+- The home-local guide body lives at `~/.cduo/orchestration-guide.md`.
+- Root policy files get a top-of-file absolute pointer such as
+  `@/Users/you/.cduo/orchestration-guide.md`.
+- `AGENTS.md` and `CLAUDE.md` are both ensured when missing, and existing body
+  content is preserved below the pointer.
+
 ## Troubleshooting
 
 Messages are not relaying:
@@ -287,7 +313,7 @@ The terminal starts in the wrong directory:
 Claude is missing the orchestration context:
 
 - Run `cduo init`
-- Check that `CLAUDE.md` contains an absolute `@.../.cduo/orchestration-guide.md` reference
+- Check that `AGENTS.md` and `CLAUDE.md` contain an absolute `@.../.cduo/orchestration-guide.md` reference
 
 Claude shows `SessionStart:startup hook error` before the prompt:
 

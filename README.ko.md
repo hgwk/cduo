@@ -97,6 +97,12 @@ cduo doctor
 cduo start claude codex
 ```
 
+## 함께 쓰는 도구 역할
+
+- `cduo doctor`: pair-agent 런타임 설정과 프로젝트 hook 준비 상태 점검
+- `ldgr verify`: ledger lifecycle, audit, worklog, Git evidence 점검
+- `hrns audit`: 저장소 구조, 문서, 설정, 코드 guardrail 점검
+
 native UI는 foreground로 실행됩니다. 종료는 UI 안에서 `Ctrl-Q`를 사용합니다.
 
 native UI 조작:
@@ -206,8 +212,7 @@ Codex를 선택하면 `cduo`는 현재 `PATH`의 `codex`가 공식 OpenAI CLI인
 ```text
 your-project/
 ├── .cduo/
-│   ├── backups/
-│   └── orchestration-guide.md
+│   └── backups/
 ├── .claude/
 │   └── settings.local.json
 ├── AGENTS.md
@@ -217,7 +222,7 @@ your-project/
 
 명령별 동작:
 
-- `cduo init`은 `.claude/settings.local.json`, `~/.cduo/orchestration-guide.md`, `CLAUDE.md`의 절대 orchestration 참조를 함께 관리합니다
+- `cduo init`은 `.claude/settings.local.json`, `~/.cduo/orchestration-guide.md`, 루트 policy 파일의 절대 orchestration 참조를 함께 관리합니다
 - `AGENTS.md`와 `CLAUDE.md`는 모두 같은 참조를 갖고, 기존 본문은 참조 아래에 보존합니다
 - `cduo start`, `cduo claude ...`, `cduo codex ...`는 프로젝트 파일을 수정하지 않습니다
 - `cduo backup`은 `.cduo/backups/` 아래에 타임스탬프 백업을 저장합니다
@@ -279,6 +284,27 @@ cduo update
 npm install -g @hgwk/cduo@latest
 ```
 
+## 로컬 설치 기준
+
+로컬 개발과 수동 설치에서는 실제 실행 파일을 다음 위치에 둡니다.
+
+```bash
+~/.local/bin/cduo
+```
+
+다른 PATH 위치에서도 `cduo`가 필요하면 바이너리를 여러 곳에 복사하지 말고
+`~/.local/bin/cduo`를 가리키는 symlink를 둡니다.
+
+## 에이전트 가이드 포인터
+
+`cduo init`은 `ldgr`, `hrns`와 같은 guide-pointer 방식을 씁니다.
+
+- home-local guide 본문은 `~/.cduo/orchestration-guide.md`에 둡니다.
+- 루트 policy 파일에는 `@/Users/you/.cduo/orchestration-guide.md` 같은
+  top-of-file 절대 포인터만 둡니다.
+- `AGENTS.md`와 `CLAUDE.md`는 없으면 만들고, 기존 본문은 포인터 아래에
+  보존합니다.
+
 ## 트러블슈팅
 
 메시지 relay가 안 되는 경우:
@@ -304,7 +330,7 @@ Codex가 설치돼 있는데 `cduo codex`가 거부되는 경우:
 Claude에 orchestration 컨텍스트가 안 들어간 경우:
 
 - `cduo init` 실행
-- `CLAUDE.md`는 Claude 흐름에서만 관리된다는 점 확인
+- `AGENTS.md`와 `CLAUDE.md`에 절대 경로 `@.../.cduo/orchestration-guide.md` 참조가 있는지 확인
 
 Claude 시작 전에 `SessionStart:startup hook error`가 보이는 경우:
 
