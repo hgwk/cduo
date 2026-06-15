@@ -6,18 +6,17 @@ use anyhow::Result;
 use crossterm::event::{self, Event};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::native::access::{agent_args, agent_program, AccessMode};
 use crate::native::layout::resize_panes_for_view;
-use crate::native::pane::{Focus, Pane, PaneId, PaneSpawnOptions};
+use crate::native::pane::{Focus, PaneId};
 use crate::native::render::draw;
 use crate::native::runtime::RuntimeOptions;
 use crate::native::runtime_events::handle_key_event;
 use crate::native::runtime_io::*;
+use crate::native::runtime_loop_spawn::spawn_panes;
 use crate::native::runtime_loop_support::*;
 use crate::native::runtime_mouse_events::handle_mouse_event;
 use crate::native::runtime_status::{footer_with_relay_status, log_ticker_footer, RelayStatusView};
 use crate::native::selection::MouseSelection;
-use crate::native::ui::pane_pty_size;
 
 const FRAME_BUDGET_MS: u64 = 16;
 const POLL_INTERVAL_MS: u64 = 8;
@@ -42,48 +41,9 @@ pub(super) fn ui_loop(
 
     let initial = terminal.size()?;
     let mut footer_width = initial.width;
-    let (pane_cols, pane_rows) = pane_pty_size(initial.width, initial.height, opts.split);
-    let port_str = hook_port.to_string();
-    let mode = AccessMode::from_flags(opts.yolo, opts.full_access)?;
     let mut split = opts.split;
 
-    let pane_a_env = pane_env(
-        "a",
-        port_str.as_str(),
-        opts.session_name.as_deref(),
-        opts.role_a.as_deref(),
-    );
-    let pane_b_env = pane_env(
-        "b",
-        port_str.as_str(),
-        opts.session_name.as_deref(),
-        opts.role_b.as_deref(),
-    );
-
-    let pane_a = Pane::spawn(PaneSpawnOptions {
-        id: PaneId::A,
-        agent: agent_program(opts.agent_a),
-        args: agent_args(opts.agent_a, mode),
-        cwd,
-        cols: pane_cols,
-        rows: pane_rows,
-        env: &pane_a_env,
-        role: opts.role_a.clone(),
-        session_name: opts.session_name.clone(),
-    })?;
-    let pane_b = Pane::spawn(PaneSpawnOptions {
-        id: PaneId::B,
-        agent: agent_program(opts.agent_b),
-        args: agent_args(opts.agent_b, mode),
-        cwd,
-        cols: pane_cols,
-        rows: pane_rows,
-        env: &pane_b_env,
-        role: opts.role_b.clone(),
-        session_name: opts.session_name.clone(),
-    })?;
-
-    let mut panes: [Pane; 2] = [pane_a, pane_b];
+    let mut panes = spawn_panes(&opts, cwd, hook_port, initial)?;
     let mut focus = Focus(PaneId::A);
     let mut last_frame = Instant::now() - Duration::from_secs(1);
     let runtime_start = Instant::now();
