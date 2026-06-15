@@ -10,6 +10,7 @@ pub fn doctor_runtime() -> Result<()> {
     } else {
         "busy"
     };
+    let selected_port = selected_hook_port(port);
 
     println!("cduo doctor runtime");
     println!(
@@ -22,6 +23,12 @@ pub fn doctor_runtime() -> Result<()> {
     );
     println!("cduo home: {}", cduo_home_dir()?.display());
     println!("hook port: {port} ({port_state})");
+    println!(
+        "selected hook port: {}",
+        selected_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "none available in +99 range".to_string())
+    );
     println!(
         "CODEX_HOME sessions: {}",
         runtime_path_status(codex_sessions_dir()?)
@@ -88,6 +95,14 @@ fn preferred_hook_port_from(mut get: impl FnMut(&str) -> Option<String>) -> u16 
         }
     }
     53333
+}
+
+fn selected_hook_port(start: u16) -> Option<u16> {
+    candidate_hook_ports(start).find(|port| port_available(*port))
+}
+
+fn candidate_hook_ports(start: u16) -> impl Iterator<Item = u16> {
+    (0..100).filter_map(move |offset| start.checked_add(offset))
 }
 
 fn port_available(port: u16) -> bool {

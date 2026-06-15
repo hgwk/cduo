@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   quality:
@@ -19,6 +18,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo test-fast
+      - run: cargo test-relay
+      - run: cargo test-native
+      - run: cargo clippy --all-targets -- -D warnings
       - uses: actions/setup-node@v4
         with:
           node-version: 24

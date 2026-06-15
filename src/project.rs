@@ -122,7 +122,7 @@ fn ensure_stop_hook(path: &Path, force: bool) -> Result<bool> {
     }
 
     let mut value = if force { template } else { existing };
-    set_stop_hook(&mut value, template_stop);
+    set_stop_hook(&mut value, template_stop)?;
     fs::write(path, serde_json::to_string_pretty(&value)?)?;
     Ok(true)
 }
@@ -131,12 +131,14 @@ fn is_empty_stop_hook(stop: &serde_json::Value) -> bool {
     stop.is_null() || stop.as_array().is_some_and(|entries| entries.is_empty())
 }
 
-fn set_stop_hook(value: &mut serde_json::Value, stop: serde_json::Value) {
+fn set_stop_hook(value: &mut serde_json::Value, stop: serde_json::Value) -> Result<()> {
     if !value.is_object() {
         *value = serde_json::json!({});
     }
 
-    let root = value.as_object_mut().expect("settings value is object");
+    let Some(root) = value.as_object_mut() else {
+        bail!("settings value is not a JSON object");
+    };
     let hooks = root
         .entry("hooks".to_string())
         .or_insert_with(|| serde_json::json!({}));
@@ -145,10 +147,11 @@ fn set_stop_hook(value: &mut serde_json::Value, stop: serde_json::Value) {
         *hooks = serde_json::json!({});
     }
 
-    hooks
-        .as_object_mut()
-        .expect("hooks value is object")
-        .insert("Stop".to_string(), stop);
+    let Some(hooks) = hooks.as_object_mut() else {
+        bail!("hooks value is not a JSON object");
+    };
+    hooks.insert("Stop".to_string(), stop);
+    Ok(())
 }
 
 fn is_cduo_stop_hook(stop: &serde_json::Value) -> bool {
