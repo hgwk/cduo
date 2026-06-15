@@ -36,6 +36,7 @@ async fn relay_publishes_codex_polling_to_a() {
 
     let inputs = RelayInputs {
         cwd: cwd.clone(),
+        pair_id: "test-pair".to_string(),
         started_at,
         log_path: temp.path().join("relay.log"),
         pane_agents,
@@ -127,6 +128,7 @@ async fn communication_gate_codex_to_claude() {
 
     let inputs = RelayInputs {
         cwd: cwd.clone(),
+        pair_id: "test-pair".to_string(),
         started_at,
         log_path: temp.path().join("relay.log"),
         pane_agents,

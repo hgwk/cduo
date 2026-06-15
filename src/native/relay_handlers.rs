@@ -151,6 +151,12 @@ pub(super) async fn handle_claude_hook_event(
     if !pane_uses_claude(pane_agents, &pane_id) {
         return;
     }
+    if let Some(pair_id) = event.pair_id.as_deref() {
+        log_event(
+            log_path,
+            format!("hook_event_pair source={pane_id} pair={pair_id}"),
+        );
+    }
     let transcript_path = event
         .transcript_path
         .as_deref()

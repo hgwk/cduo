@@ -220,12 +220,18 @@ Command behavior:
 ## Relay Model
 
 1. `cduo` starts a native split-pane TUI.
-2. The native runtime launches the selected agents in direct PTYs with `TERMINAL_ID` and `ORCHESTRATION_PORT`.
+2. The native runtime creates a per-run `CDUO_PAIR_ID` and launches the selected agents in direct PTYs with `TERMINAL_ID`, `ORCHESTRATION_PORT`, and `CDUO_PAIR_ID`.
 3. `ratatui` + `vt100` render the two PTYs directly; there is no tmux fallback.
 4. Claude sends completion events through the `Stop` hook to the embedded hook server.
 5. Codex completions are read from Codex rollout JSONL files for the current workspace, matched to the pane's submitted prompt.
 6. `MessageBus` deduplicates source/target/content deliveries and `PairRouter` forwards each agent response to its counterpart.
 7. Relay output is written directly to the target PTY stdin; terminal UI output is not used as message content.
+
+Each foreground pair gets its own pair id, hook port, relay log, and in-process
+transcript bindings. Hook payloads that include a different `pair_id` are
+ignored, which prevents two simultaneously running pairs from accepting each
+other's Claude hook events. Re-run `cduo init` after upgrading if a project has
+an older Claude hook template that does not send `CDUO_PAIR_ID`.
 
 Preferred relay base port:
 

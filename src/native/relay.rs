@@ -44,6 +44,7 @@ pub struct RelayStatus {
 
 pub struct RelayInputs {
     pub cwd: PathBuf,
+    pub pair_id: String,
     pub started_at: DateTime<Utc>,
     pub log_path: PathBuf,
     pub pane_agents: HashMap<String, String>,
@@ -58,6 +59,7 @@ pub struct RelayInputs {
 pub async fn run(inputs: RelayInputs) {
     let RelayInputs {
         cwd,
+        pair_id,
         started_at,
         log_path,
         pane_agents,
@@ -82,7 +84,7 @@ pub async fn run(inputs: RelayInputs) {
     let codex_pending_prompts: HashMap<String, String> = HashMap::new();
     let controls = RelayControlState::from_env();
 
-    log_event(&log_path, "native_relay_start");
+    log_event(&log_path, format!("native_relay_start pair={pair_id}"));
     let mut state = RelayState {
         bus,
         router,
@@ -136,7 +138,7 @@ pub async fn run(inputs: RelayInputs) {
             _ = shutdown_rx.recv() => break,
         }
     }
-    log_event(&log_path, "native_relay_stop");
+    log_event(&log_path, format!("native_relay_stop pair={pair_id}"));
 }
 
 pub(super) struct RelayState {

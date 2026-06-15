@@ -149,6 +149,7 @@ async fn codex_manual_input_keeps_existing_transcript_binding() {
 
     let inputs = RelayInputs {
         cwd: cwd.clone(),
+        pair_id: "test-pair".to_string(),
         started_at,
         log_path: temp.path().join("relay.log"),
         pane_agents,

@@ -20,6 +20,7 @@ async fn communication_gate_route_off_blocks_b_to_a_in_run_loop() {
 
     let handle = tokio::spawn(run(RelayInputs {
         cwd: std::env::current_dir().unwrap(),
+        pair_id: "test-pair".to_string(),
         started_at: chrono::Utc::now(),
         log_path,
         pane_agents,
@@ -43,6 +44,7 @@ async fn communication_gate_route_off_blocks_b_to_a_in_run_loop() {
     hook_tx
         .send(HookEvent {
             terminal_id: "b".to_string(),
+            pair_id: None,
             transcript_path: Some(transcript_path.to_string_lossy().into_owned()),
         })
         .await
@@ -91,6 +93,7 @@ async fn communication_gate_codex_to_codex() {
 
     let handle = tokio::spawn(run(RelayInputs {
         cwd: cwd.clone(),
+        pair_id: "test-pair".to_string(),
         started_at,
         log_path: temp.path().join("relay.log"),
         pane_agents,
@@ -152,6 +155,7 @@ async fn communication_gate_codex_resume_session_with_old_session_timestamp() {
 
     let handle = tokio::spawn(run(RelayInputs {
         cwd: cwd.clone(),
+        pair_id: "test-pair".to_string(),
         started_at,
         log_path: temp.path().join("relay.log"),
         pane_agents,

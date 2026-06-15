@@ -34,6 +34,7 @@ pub struct RuntimeOptions {
 
 pub async fn run(opts: RuntimeOptions) -> Result<()> {
     let cwd = std::env::current_dir().context("get current dir")?;
+    let pair_id = new_pair_id();
 
     // Validate flags before allocating anything else.
     AccessMode::from_flags(opts.yolo, opts.full_access)?;
@@ -58,19 +59,21 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
 
     tokio::spawn({
         let shutdown_rx = shutdown_tx.subscribe();
+        let hook_pair_id = pair_id.clone();
         async move {
             hook::run_hook_server_on_listener(
                 hook_listener,
                 shutdown_rx,
                 hook_tx,
                 Some(hook_ping_tx),
+                Some(hook_pair_id),
             )
             .await;
         }
     });
 
     // Per-session log file under the platform state directory.
-    let log_path = native_log_path()?;
+    let log_path = native_log_path(&pair_id)?;
 
     let pane_agents: HashMap<String, String> = HashMap::from([
         ("a".to_string(), agent_program(opts.agent_a).to_string()),
@@ -81,6 +84,7 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
 
     tokio::spawn(relay::run(relay::RelayInputs {
         cwd: cwd.clone(),
+        pair_id: pair_id.clone(),
         started_at,
         log_path: log_path.clone(),
         pane_agents,
@@ -100,7 +104,9 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
         hook_ping_rx,
     };
     let join = tokio::task::spawn_blocking(move || {
-        crate::native::runtime_loop_support::run_blocking(opts, cwd, hook_port, log_path, channels)
+        crate::native::runtime_loop_support::run_blocking(
+            opts, cwd, hook_port, pair_id, log_path, channels,
+        )
     });
     let result = join.await.context("native runtime join")?;
 
@@ -108,11 +114,36 @@ pub async fn run(opts: RuntimeOptions) -> Result<()> {
     result
 }
 
-fn native_log_path() -> Result<PathBuf> {
+fn native_log_path(pair_id: &str) -> Result<PathBuf> {
     let dir = crate::session::get_state_root().join("native");
     std::fs::create_dir_all(&dir).ok();
+    Ok(dir.join(format!("session-{pair_id}.log")))
+}
+
+fn new_pair_id() -> String {
+    if let Ok(value) = std::env::var("CDUO_PAIR_ID_OVERRIDE") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return sanitize_pair_id(trimmed);
+        }
+    }
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S");
-    Ok(dir.join(format!("session-{stamp}.log")))
+    let pid = std::process::id();
+    let nonce: u32 = rand::random();
+    format!("cduo-{stamp}-{pid}-{nonce:08x}")
+}
+
+fn sanitize_pair_id(value: &str) -> String {
+    let out: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .take(80)
+        .collect();
+    if out.is_empty() {
+        "cduo-pair".to_string()
+    } else {
+        out
+    }
 }
 
 async fn bind_hook_listener(start: u16) -> Result<TcpListener> {

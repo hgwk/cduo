@@ -50,6 +50,7 @@ async fn template_stop_hook_command_posts_to_http_server() {
         .with_state(HookState {
             relay_tx,
             ping_tx: None,
+            expected_pair_id: None,
         });
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -108,6 +109,7 @@ async fn template_stop_hook_active_exits_without_posting() {
         .with_state(HookState {
             relay_tx,
             ping_tx: None,
+            expected_pair_id: None,
         });
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -158,7 +160,7 @@ async fn bound_hook_server_accepts_requests_without_rebinding() {
     let port = listener.local_addr().unwrap().port();
 
     let server = tokio::spawn(async move {
-        run_hook_server_on_listener(listener, shutdown_rx, relay_tx, None).await;
+        run_hook_server_on_listener(listener, shutdown_rx, relay_tx, None, None).await;
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 

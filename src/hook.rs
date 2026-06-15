@@ -6,6 +6,7 @@ use tokio::sync::{broadcast, mpsc};
 #[derive(Debug, Clone)]
 pub struct HookEvent {
     pub terminal_id: String,
+    pub pair_id: Option<String>,
     pub transcript_path: Option<String>,
 }
 
@@ -14,6 +15,8 @@ struct HookPayload {
     #[serde(rename = "type")]
     event_type: String,
     terminal_id: String,
+    #[serde(default)]
+    pair_id: Option<String>,
     #[serde(default)]
     transcript_path: Option<String>,
 }
@@ -27,6 +30,7 @@ struct HookResponse {
 struct HookState {
     relay_tx: mpsc::Sender<HookEvent>,
     ping_tx: Option<mpsc::Sender<()>>,
+    expected_pair_id: Option<String>,
 }
 
 pub async fn run_hook_server_on_listener(
@@ -34,8 +38,13 @@ pub async fn run_hook_server_on_listener(
     mut shutdown: broadcast::Receiver<()>,
     relay_tx: mpsc::Sender<HookEvent>,
     ping_tx: Option<mpsc::Sender<()>>,
+    expected_pair_id: Option<String>,
 ) {
-    let state = HookState { relay_tx, ping_tx };
+    let state = HookState {
+        relay_tx,
+        ping_tx,
+        expected_pair_id,
+    };
     let app = Router::new()
         .route("/hook", post(handle_hook))
         .with_state(state);
@@ -69,9 +78,15 @@ async fn handle_hook(
     {
         return (StatusCode::OK, Json(HookResponse { ok: false }));
     }
+    if let (Some(expected), Some(actual)) = (&state.expected_pair_id, &payload.pair_id) {
+        if actual != expected {
+            return (StatusCode::OK, Json(HookResponse { ok: false }));
+        }
+    }
 
     let event = HookEvent {
         terminal_id: payload.terminal_id,
+        pair_id: payload.pair_id.filter(|pair_id| !pair_id.is_empty()),
         transcript_path: payload.transcript_path.filter(|path| !path.is_empty()),
     };
 

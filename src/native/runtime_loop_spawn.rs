@@ -13,6 +13,7 @@ pub(super) fn spawn_panes(
     opts: &RuntimeOptions,
     cwd: &Path,
     hook_port: u16,
+    pair_id: &str,
     initial: Size,
 ) -> Result<[Pane; 2]> {
     let (pane_cols, pane_rows) = pane_pty_size(initial.width, initial.height, opts.split);
@@ -22,12 +23,14 @@ pub(super) fn spawn_panes(
     let pane_a_env = pane_env(
         "a",
         port_str.as_str(),
+        pair_id,
         opts.session_name.as_deref(),
         opts.role_a.as_deref(),
     );
     let pane_b_env = pane_env(
         "b",
         port_str.as_str(),
+        pair_id,
         opts.session_name.as_deref(),
         opts.role_b.as_deref(),
     );

@@ -22,6 +22,7 @@ pub(super) fn run_blocking(
     opts: RuntimeOptions,
     cwd: PathBuf,
     hook_port: u16,
+    pair_id: String,
     log_path: PathBuf,
     channels: RuntimeChannels,
 ) -> Result<()> {
@@ -29,7 +30,7 @@ pub(super) fn run_blocking(
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
 
-    let result = ui_loop(opts, &cwd, hook_port, &log_path, channels);
+    let result = ui_loop(opts, &cwd, hook_port, &pair_id, &log_path, channels);
 
     let mut stdout = io::stdout();
     let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
@@ -37,9 +38,10 @@ pub(super) fn run_blocking(
     result
 }
 
-pub(super) fn default_footer_message(hook_port: u16, hook_dot: &str) -> String {
+pub(super) fn default_footer_message(hook_port: u16, pair_id: &str, hook_dot: &str) -> String {
+    let short_pair = pair_id.rsplit('-').next().unwrap_or(pair_id);
     format!(
-        " hook:{hook_port}{hook_dot}  · Ctrl-Y: broadcast  · Ctrl-N: names  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit "
+        " pair:{short_pair}  hook:{hook_port}{hook_dot}  · Ctrl-Y: broadcast  · Ctrl-N: names  · Ctrl-W: focus  · Ctrl-P: pause relay  · Ctrl-L: split  · drag: copy  · PageUp/PageDown: scroll  · Ctrl-Q: quit "
     )
 }
 
@@ -91,10 +93,15 @@ pub(super) fn sync_maximized_focus(
 pub(super) fn pane_env<'a>(
     terminal_id: &'static str,
     port: &'a str,
+    pair_id: &'a str,
     session_name: Option<&'a str>,
     role: Option<&'a str>,
 ) -> Vec<(&'static str, &'a str)> {
-    let mut env = vec![("TERMINAL_ID", terminal_id), ("ORCHESTRATION_PORT", port)];
+    let mut env = vec![
+        ("TERMINAL_ID", terminal_id),
+        ("ORCHESTRATION_PORT", port),
+        ("CDUO_PAIR_ID", pair_id),
+    ];
     if let Some(session_name) = session_name.filter(|value| !value.trim().is_empty()) {
         env.push(("CDUO_SESSION_NAME", session_name));
     }

@@ -232,12 +232,18 @@ your-project/
 ## Relay 구조
 
 1. `cduo`가 native split-pane TUI를 시작합니다.
-2. native runtime이 선택된 agent를 `TERMINAL_ID`와 `ORCHESTRATION_PORT`를 가진 direct PTY 두 개로 실행합니다.
+2. native runtime이 실행마다 `CDUO_PAIR_ID`를 만들고, 선택된 agent를 `TERMINAL_ID`, `ORCHESTRATION_PORT`, `CDUO_PAIR_ID`를 가진 direct PTY 두 개로 실행합니다.
 3. `ratatui` + `vt100`이 두 PTY를 직접 렌더링합니다. tmux fallback은 없습니다.
 4. Claude는 `Stop` hook으로 completion 이벤트와 transcript 경로를 보냅니다.
 5. Codex completion은 현재 workspace의 Codex rollout JSONL에서 읽고, 해당 pane에 제출된 prompt와 매칭합니다.
 6. `MessageBus`가 source/target/content 중복 전송을 막고 `PairRouter`가 상대 pane으로 전달합니다.
 7. relay 출력은 target PTY stdin에 직접 쓰고 Enter를 보냅니다. 터미널 UI 출력은 메시지 본문으로 쓰지 않습니다.
+
+각 foreground pair는 고유 pair id, hook port, relay log, in-process transcript
+binding을 가집니다. hook payload에 다른 `pair_id`가 들어오면 무시하므로,
+동시에 실행 중인 pair가 서로의 Claude hook 이벤트를 받아들이는 일을 막습니다.
+업그레이드 전 설치된 오래된 Claude hook template이 있는 프로젝트는 `cduo init`을
+다시 실행해 `CDUO_PAIR_ID` 전송을 반영하세요.
 
 선호하는 relay 기본 포트:
 

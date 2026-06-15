@@ -6,6 +6,7 @@ async fn test_full_channel_returns_without_blocking() {
     let (tx, mut rx) = mpsc::channel::<HookEvent>(1);
     tx.try_send(HookEvent {
         terminal_id: "a".to_string(),
+        pair_id: None,
         transcript_path: None,
     })
     .unwrap();
@@ -14,6 +15,7 @@ async fn test_full_channel_returns_without_blocking() {
         .with_state(HookState {
             relay_tx: tx,
             ping_tx: None,
+            expected_pair_id: None,
         });
 
     let response = tokio::time::timeout(

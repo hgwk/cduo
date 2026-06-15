@@ -5,6 +5,7 @@ fn make_app() -> (Router, mpsc::Receiver<HookEvent>) {
     let state = HookState {
         relay_tx: tx,
         ping_tx: None,
+        expected_pair_id: None,
     };
     let app = Router::new()
         .route("/hook", post(handle_hook))

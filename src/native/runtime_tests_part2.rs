@@ -132,19 +132,21 @@ fn relay_reset_footer_names_auto_relay_on_state() {
 
 #[test]
 fn pane_env_includes_session_and_role_metadata() {
-    let env = pane_env("a", "53333", Some("api"), Some("planner"));
+    let env = pane_env("a", "53333", "pair-1", Some("api"), Some("planner"));
 
     assert!(env.contains(&("TERMINAL_ID", "a")));
     assert!(env.contains(&("ORCHESTRATION_PORT", "53333")));
+    assert!(env.contains(&("CDUO_PAIR_ID", "pair-1")));
     assert!(env.contains(&("CDUO_SESSION_NAME", "api")));
     assert!(env.contains(&("CDUO_PANE_ROLE", "planner")));
 }
 
 #[test]
 fn pane_env_skips_blank_metadata() {
-    let env = pane_env("b", "53333", Some(" "), Some(""));
+    let env = pane_env("b", "53333", "pair-2", Some(" "), Some(""));
 
     assert!(env.contains(&("TERMINAL_ID", "b")));
+    assert!(env.contains(&("CDUO_PAIR_ID", "pair-2")));
     assert!(!env.iter().any(|(key, _)| *key == "CDUO_SESSION_NAME"));
     assert!(!env.iter().any(|(key, _)| *key == "CDUO_PANE_ROLE"));
 }

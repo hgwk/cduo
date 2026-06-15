@@ -21,6 +21,7 @@ async fn relay_reports_auto_stopped_status_after_explicit_stop_token() {
 
     let handle = tokio::spawn(run(RelayInputs {
         cwd: std::env::current_dir().unwrap(),
+        pair_id: "test-pair".to_string(),
         started_at: chrono::Utc::now(),
         log_path,
         pane_agents,
@@ -41,6 +42,7 @@ async fn relay_reports_auto_stopped_status_after_explicit_stop_token() {
     hook_tx
         .send(HookEvent {
             terminal_id: "a".to_string(),
+            pair_id: None,
             transcript_path: Some(transcript_path.to_string_lossy().into_owned()),
         })
         .await

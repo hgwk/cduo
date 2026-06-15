@@ -26,6 +26,30 @@ fn preferred_hook_port_accepts_cduo_port_over_port() {
 }
 
 #[test]
+fn new_pair_id_ignores_inherited_pair_env() {
+    let _guard = env_lock();
+    std::env::set_var("CDUO_PAIR_ID", "parent-pair");
+    std::env::remove_var("CDUO_PAIR_ID_OVERRIDE");
+
+    let pair = new_pair_id();
+
+    assert_ne!(pair, "parent-pair");
+    assert!(pair.starts_with("cduo-"));
+    std::env::remove_var("CDUO_PAIR_ID");
+}
+
+#[test]
+fn new_pair_id_allows_explicit_override() {
+    let _guard = env_lock();
+    std::env::set_var("CDUO_PAIR_ID_OVERRIDE", "pair with spaces!*");
+
+    let pair = new_pair_id();
+
+    assert_eq!(pair, "pairwithspaces");
+    std::env::remove_var("CDUO_PAIR_ID_OVERRIDE");
+}
+
+#[test]
 fn candidate_hook_ports_stops_at_u16_max_without_overflow() {
     let ports: Vec<u16> = candidate_hook_ports(u16::MAX - 1).collect();
     assert_eq!(ports, vec![u16::MAX - 1, u16::MAX]);

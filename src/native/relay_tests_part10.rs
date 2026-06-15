@@ -43,6 +43,7 @@ async fn codex_rebinds_when_next_prompt_appears_in_new_rollout() {
 
     let handle = tokio::spawn(run(RelayInputs {
         cwd: cwd.clone(),
+        pair_id: "test-pair".to_string(),
         started_at,
         log_path: temp.path().join("relay.log"),
         pane_agents,

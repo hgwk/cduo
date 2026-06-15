@@ -21,6 +21,7 @@ async fn communication_gate_claude_to_claude() {
 
     let inputs = RelayInputs {
         cwd: std::env::current_dir().unwrap(),
+        pair_id: "test-pair".to_string(),
         started_at: chrono::Utc::now(),
         log_path,
         pane_agents,
@@ -37,6 +38,7 @@ async fn communication_gate_claude_to_claude() {
     hook_tx
         .send(HookEvent {
             terminal_id: "a".to_string(),
+            pair_id: None,
             transcript_path: Some(transcript_path.to_string_lossy().into_owned()),
         })
         .await
@@ -89,6 +91,7 @@ async fn communication_gate_claude_to_codex() {
 
     let handle = tokio::spawn(run(RelayInputs {
         cwd: std::env::current_dir().unwrap(),
+        pair_id: "test-pair".to_string(),
         started_at: chrono::Utc::now(),
         log_path,
         pane_agents,
@@ -103,6 +106,7 @@ async fn communication_gate_claude_to_codex() {
     hook_tx
         .send(HookEvent {
             terminal_id: "a".to_string(),
+            pair_id: None,
             transcript_path: Some(transcript_path.to_string_lossy().into_owned()),
         })
         .await
@@ -148,6 +152,7 @@ async fn communication_gate_claude_to_codex_without_hook_transcript_path() {
 
     let handle = tokio::spawn(run(RelayInputs {
         cwd: cwd.clone(),
+        pair_id: "test-pair".to_string(),
         started_at,
         log_path: temp.path().join("relay.log"),
         pane_agents,
@@ -162,6 +167,7 @@ async fn communication_gate_claude_to_codex_without_hook_transcript_path() {
     hook_tx
         .send(HookEvent {
             terminal_id: "a".to_string(),
+            pair_id: None,
             transcript_path: None,
         })
         .await

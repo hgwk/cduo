@@ -25,6 +25,7 @@ pub(super) fn ui_loop(
     opts: RuntimeOptions,
     cwd: &std::path::Path,
     hook_port: u16,
+    pair_id: &str,
     log_path: &std::path::Path,
     channels: RuntimeChannels,
 ) -> Result<()> {
@@ -43,13 +44,13 @@ pub(super) fn ui_loop(
     let mut footer_width = initial.width;
     let mut split = opts.split;
 
-    let mut panes = spawn_panes(&opts, cwd, hook_port, initial)?;
+    let mut panes = spawn_panes(&opts, cwd, hook_port, pair_id, initial)?;
     let mut focus = Focus(PaneId::A);
     let mut last_frame = Instant::now() - Duration::from_secs(1);
     let runtime_start = Instant::now();
     let mut dirty = true;
     let mut last_hook_at: Option<Instant> = None;
-    let mut footer_msg = default_footer_message(hook_port, "");
+    let mut footer_msg = default_footer_message(hook_port, pair_id, "");
     let mut error_set_at: Option<Instant> = None;
     let mut error_raw_msg: String = String::new();
     let mut selection: Option<MouseSelection> = None;
@@ -78,7 +79,7 @@ pub(super) fn ui_loop(
         }
 
         let dot = crate::native::footer::hook_ping_glyph(last_hook_at.map(|t| t.elapsed()));
-        let default_footer_msg = default_footer_message(hook_port, dot);
+        let default_footer_msg = default_footer_message(hook_port, pair_id, dot);
 
         if !relay_paused
             && drain_paused_writes(&mut panes, &mut paused_writes, log_path, &mut traffic)
