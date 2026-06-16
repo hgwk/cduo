@@ -126,6 +126,27 @@ fn write_error_footer_names_target_pane() {
 }
 
 #[test]
+fn bracketed_paste_bytes_wraps_text_for_child_pty() {
+    let bytes = bracketed_paste_bytes("hello\nworld");
+
+    assert_eq!(bytes, b"\x1b[200~hello\nworld\x1b[201~");
+}
+
+#[test]
+fn capture_line_keeps_pasted_text_pending_until_enter() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut buf = HashMap::new();
+
+    capture_line(PaneId::A, b"pasted prompt", &mut buf, &tx);
+    assert!(rx.try_recv().is_err());
+
+    capture_line(PaneId::A, b"\r", &mut buf, &tx);
+    let (pane, prompt) = rx.try_recv().unwrap();
+    assert_eq!(pane, "a");
+    assert_eq!(prompt, "pasted prompt");
+}
+
+#[test]
 fn relay_reset_footer_names_auto_relay_on_state() {
     assert_eq!(relay_reset_footer(), " relay restarted · auto relay ON ");
 }

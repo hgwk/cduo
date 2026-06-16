@@ -209,3 +209,33 @@ async fn test_pair_mismatch_is_ignored() {
     assert!(!resp.ok);
     assert!(rx.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn test_missing_pair_id_is_ignored_when_pair_is_expected() {
+    let (tx, mut rx) = mpsc::channel::<HookEvent>(16);
+    let app = Router::new()
+        .route("/hook", post(handle_hook))
+        .with_state(HookState {
+            relay_tx: tx,
+            ping_tx: None,
+            expected_pair_id: Some("pair-a".to_string()),
+        });
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/hook")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"type":"stop","terminal_id":"a"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let resp: HookResponse = serde_json::from_slice(&body).unwrap();
+    assert!(!resp.ok);
+    assert!(rx.try_recv().is_err());
+}

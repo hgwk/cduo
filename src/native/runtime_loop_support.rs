@@ -2,7 +2,9 @@ use std::io;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -28,12 +30,23 @@ pub(super) fn run_blocking(
 ) -> Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).context("enter alt screen")?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )
+    .context("enter alt screen")?;
 
     let result = ui_loop(opts, &cwd, hook_port, &pair_id, &log_path, channels);
 
     let mut stdout = io::stdout();
-    let _ = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen);
+    let _ = execute!(
+        stdout,
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
     let _ = disable_raw_mode();
     result
 }

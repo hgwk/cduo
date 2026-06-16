@@ -78,9 +78,12 @@ async fn handle_hook(
     {
         return (StatusCode::OK, Json(HookResponse { ok: false }));
     }
-    if let (Some(expected), Some(actual)) = (&state.expected_pair_id, &payload.pair_id) {
-        if actual != expected {
-            return (StatusCode::OK, Json(HookResponse { ok: false }));
+    if let Some(expected) = &state.expected_pair_id {
+        match payload.pair_id.as_deref() {
+            Some(actual) if actual == expected => {}
+            _ => {
+                return (StatusCode::OK, Json(HookResponse { ok: false }));
+            }
         }
     }
 

@@ -6,7 +6,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event};
 use ratatui::{backend::CrosstermBackend, Terminal};
 
-use crate::native::layout::resize_panes_for_view;
+use crate::native::layout::{focus_index, resize_panes_for_view};
 use crate::native::pane::{Focus, PaneId};
 use crate::native::render::draw;
 use crate::native::runtime::RuntimeOptions;
@@ -225,6 +225,17 @@ pub(super) fn ui_loop(
                     )? {
                         break 'main;
                     }
+                }
+                Event::Paste(text) => {
+                    let idx = focus_index(focus);
+                    let bytes = bracketed_paste_bytes(&text);
+                    if let Err(err) = panes[idx].write(&bytes) {
+                        footer_msg = write_error_footer(focus.0.label(), &err);
+                        error_raw_msg = footer_msg.clone();
+                        error_set_at = Some(Instant::now());
+                    }
+                    capture_line(focus.0, text.as_bytes(), &mut input_buf, &input_tx);
+                    dirty = true;
                 }
                 Event::Resize(cols, rows) => {
                     footer_width = cols;
