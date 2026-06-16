@@ -158,6 +158,7 @@ function download(downloadUrl, redirects = 0) {
   https.get(downloadUrl, (response) => {
     if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
       const location = response.headers.location;
+      response.resume();
       if (!location) {
         fail(new Error('Redirect response did not include a location header'));
         return;
@@ -167,6 +168,7 @@ function download(downloadUrl, redirects = 0) {
     }
 
     if (response.statusCode !== 200) {
+      response.resume();
       fail(new Error(`GitHub release returned HTTP ${response.statusCode}`));
       return;
     }
