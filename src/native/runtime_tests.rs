@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 
-use crate::native::input::GlobalAction;
 use crate::native::pane::PaneId;
 use crate::native::runtime_io::*;
 use crate::native::runtime_loop_support::*;

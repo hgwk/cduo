@@ -130,19 +130,6 @@ fn mouse_wheel_bytes_use_sgr_coordinates() {
 }
 
 #[test]
-fn codex_screen_scroll_uses_page_key_sequences() {
-    assert_eq!(
-        codex_screen_scroll_bytes(&GlobalAction::ScrollUp).unwrap(),
-        b"\x1b[5~"
-    );
-    assert_eq!(
-        codex_screen_scroll_bytes(&GlobalAction::ScrollDown).unwrap(),
-        b"\x1b[6~"
-    );
-    assert!(codex_screen_scroll_bytes(&GlobalAction::Forward).is_none());
-}
-
-#[test]
 fn broadcast_key_buffer_edits_and_submits() {
     let mut buffer = String::new();
 

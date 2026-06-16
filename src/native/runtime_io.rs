@@ -142,22 +142,12 @@ pub(super) fn handle_mouse_wheel(
     panes: &mut [Pane; 2],
     pane: PaneId,
     kind: MouseEventKind,
-    row: u16,
-    col: u16,
-    footer_msg: &mut String,
-    error_set_at: &mut Option<Instant>,
+    _row: u16,
+    _col: u16,
+    _footer_msg: &mut String,
+    _error_set_at: &mut Option<Instant>,
 ) {
     let idx = pane_id_index(pane);
-    if panes[idx].agent == "codex" {
-        if let Some(bytes) = mouse_wheel_bytes(kind, row, col) {
-            if let Err(err) = panes[idx].write(&bytes) {
-                *footer_msg = write_error_footer(pane.label(), &err);
-                *error_set_at = Some(Instant::now());
-            }
-        }
-        return;
-    }
-
     match kind {
         MouseEventKind::ScrollUp => panes[idx].scroll_up(SCROLL_LINES),
         MouseEventKind::ScrollDown => panes[idx].scroll_down(SCROLL_LINES),
@@ -169,22 +159,11 @@ pub(super) fn handle_screen_scroll(
     panes: &mut [Pane; 2],
     pane: PaneId,
     action: &crate::native::input::GlobalAction,
-    footer_msg: &mut String,
-    error_set_at: &mut Option<Instant>,
-    error_raw_msg: &mut String,
+    _footer_msg: &mut String,
+    _error_set_at: &mut Option<Instant>,
+    _error_raw_msg: &mut String,
 ) {
     let idx = pane_id_index(pane);
-    if panes[idx].agent == "codex" {
-        if let Some(bytes) = codex_screen_scroll_bytes(action) {
-            if let Err(err) = panes[idx].write(bytes) {
-                *footer_msg = write_error_footer(pane.label(), &err);
-                *error_raw_msg = footer_msg.clone();
-                *error_set_at = Some(Instant::now());
-            }
-        }
-        return;
-    }
-
     match action {
         crate::native::input::GlobalAction::ScrollUp => panes[idx].scroll_up(SCROLL_LINES),
         crate::native::input::GlobalAction::ScrollDown => panes[idx].scroll_down(SCROLL_LINES),
@@ -192,16 +171,7 @@ pub(super) fn handle_screen_scroll(
     }
 }
 
-pub(super) fn codex_screen_scroll_bytes(
-    action: &crate::native::input::GlobalAction,
-) -> Option<&'static [u8]> {
-    match action {
-        crate::native::input::GlobalAction::ScrollUp => Some(b"\x1b[5~"),
-        crate::native::input::GlobalAction::ScrollDown => Some(b"\x1b[6~"),
-        _ => None,
-    }
-}
-
+#[cfg(test)]
 pub(super) fn mouse_wheel_bytes(kind: MouseEventKind, row: u16, col: u16) -> Option<Vec<u8>> {
     let button = match kind {
         MouseEventKind::ScrollUp => 64,
