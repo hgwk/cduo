@@ -1,0 +1,7 @@
+{
+  "lineAudit": {
+    "maxLines": 300,
+    "roots": ["src"],
+    "extensions": [".rs"]
+  }
+}
