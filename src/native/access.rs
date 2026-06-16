@@ -22,14 +22,18 @@ impl AccessMode {
 
 pub(crate) fn agent_args(agent: Agent, mode: AccessMode) -> &'static [&'static str] {
     match (agent, mode) {
-        (Agent::Codex, AccessMode::Yolo) => &["--dangerously-bypass-approvals-and-sandbox"],
+        (Agent::Codex, AccessMode::Yolo) => &[
+            "--no-alt-screen",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ],
         (Agent::Codex, AccessMode::FullAccess) => &[
+            "--no-alt-screen",
             "--sandbox",
             "danger-full-access",
             "--ask-for-approval",
             "never",
         ],
-        (Agent::Codex, AccessMode::Default) => &[],
+        (Agent::Codex, AccessMode::Default) => &["--no-alt-screen"],
         (Agent::Claude, AccessMode::Yolo) => &["--dangerously-skip-permissions"],
         (Agent::Claude, AccessMode::FullAccess) => &["--permission-mode", "bypassPermissions"],
         (Agent::Claude, AccessMode::Default) => &[],
@@ -63,7 +67,13 @@ mod tests {
     #[test]
     fn agent_args_yolo_codex() {
         let args = agent_args(Agent::Codex, AccessMode::Yolo);
-        assert_eq!(args, &["--dangerously-bypass-approvals-and-sandbox"]);
+        assert_eq!(
+            args,
+            &[
+                "--no-alt-screen",
+                "--dangerously-bypass-approvals-and-sandbox"
+            ]
+        );
     }
 
     #[test]
@@ -72,6 +82,7 @@ mod tests {
         assert_eq!(
             args,
             &[
+                "--no-alt-screen",
                 "--sandbox",
                 "danger-full-access",
                 "--ask-for-approval",
@@ -95,6 +106,9 @@ mod tests {
     #[test]
     fn agent_args_default_is_empty() {
         assert!(agent_args(Agent::Claude, AccessMode::Default).is_empty());
-        assert!(agent_args(Agent::Codex, AccessMode::Default).is_empty());
+        assert_eq!(
+            agent_args(Agent::Codex, AccessMode::Default),
+            &["--no-alt-screen"]
+        );
     }
 }
