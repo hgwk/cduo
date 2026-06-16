@@ -2,7 +2,7 @@
 
 # cduo
 
-[![Build Status](https://github.com/hgwk/cduo/workflows/CI/badge.svg)](https://github.com/hgwk/cduo/actions)
+[![Build Status](https://github.com/hgwk/cduo/workflows/Rust%20CI/badge.svg)](https://github.com/hgwk/cduo/actions)
 [![npm version](https://img.shields.io/npm/v/@hgwk/cduo.svg)](https://www.npmjs.com/package/@hgwk/cduo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
