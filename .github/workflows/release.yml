@@ -28,6 +28,26 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: release version guard
+        run: |
+          set -euo pipefail
+          cargo_version=$(cargo metadata --no-deps --format-version 1 | node -e "let d=''; process.stdin.on('data', c => d += c); process.stdin.on('end', () => console.log(JSON.parse(d).packages.find(p => p.name === 'cduo').version));")
+          npm_version=$(node -p "require('./npm/package.json').version")
+          if [ "$cargo_version" != "$npm_version" ]; then
+            echo "::error::Cargo.toml version $cargo_version does not match npm/package.json $npm_version"
+            exit 1
+          fi
+          if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+            if [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
+              echo "::error::release workflow must run from a version tag"
+              exit 1
+            fi
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$tag_version" != "$npm_version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match package version $npm_version"
+              exit 1
+            fi
+          fi
       - run: node -c npm/install.js
       - run: node -c npm/bin/cduo
       - run: npm pack --dry-run
