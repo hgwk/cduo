@@ -73,3 +73,45 @@ fn startup_hook_report_separates_invalid_json_from_hook_count() {
     let report = claude_startup_hooks_report(&[settings_path]);
     assert!(report.contains("invalid JSON"));
 }
+
+#[test]
+fn stop_hook_pair_id_report_detects_pair_aware_hook() {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+    std::fs::write(
+        &settings_path,
+        serde_json::json!({
+            "hooks": {
+                "Stop": [{"hooks": [{
+                    "type": "command",
+                    "command": "CDUO_PAIR_ID=${CDUO_PAIR_ID:-} cduo relay"
+                }]}]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let report = claude_stop_pair_id_report(&[settings_path]);
+    assert!(report.contains("found pair-aware hook"));
+}
+
+#[test]
+fn stop_hook_pair_id_report_warns_when_stop_hook_is_not_pair_aware() {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+    std::fs::write(
+        &settings_path,
+        serde_json::json!({
+            "hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "cduo relay"}]}]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let report = claude_stop_pair_id_report(&[settings_path]);
+    assert!(report.contains("missing CDUO_PAIR_ID"));
+    assert!(report.contains("cduo init"));
+}

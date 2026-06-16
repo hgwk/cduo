@@ -2,6 +2,13 @@ use anyhow::{bail, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "project_doctor_hooks.rs"]
+mod project_doctor_hooks;
+use project_doctor_hooks::{
+    claude_settings_candidates, claude_startup_hooks_report, claude_stop_pair_id_report,
+    count_hook_commands, display_path,
+};
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -47,6 +54,10 @@ pub fn doctor() -> Result<()> {
         "{}",
         claude_startup_hooks_report(&claude_settings_candidates(&cwd))
     );
+    println!(
+        "{}",
+        claude_stop_pair_id_report(&claude_settings_candidates(&cwd))
+    );
 
     if failed {
         bail!("Some checks failed. See above.");
@@ -86,6 +97,7 @@ pub fn doctor_hooks() -> Result<()> {
 
     println!("cduo doctor hooks");
     println!("{}", claude_startup_hooks_report(&candidates));
+    println!("{}", claude_stop_pair_id_report(&candidates));
     for path in candidates {
         let Ok(content) = fs::read_to_string(&path) else {
             println!("- {}: missing", display_path(&path));
@@ -117,99 +129,6 @@ fn cduo_home_dir() -> Result<PathBuf> {
 
 fn home_orchestration_path() -> Result<PathBuf> {
     Ok(cduo_home_dir()?.join("orchestration-guide.md"))
-}
-
-fn claude_settings_candidates(cwd: &Path) -> Vec<PathBuf> {
-    let mut paths = vec![cwd.join(".claude").join("settings.local.json")];
-    if let Some(home) = std::env::var_os("HOME") {
-        let home_claude = PathBuf::from(home).join(".claude");
-        paths.push(home_claude.join("settings.json"));
-        paths.push(home_claude.join("settings.local.json"));
-    }
-    paths
-}
-
-fn claude_startup_hooks_report(paths: &[PathBuf]) -> String {
-    let mut found = Vec::new();
-    let mut invalid = Vec::new();
-    for path in paths {
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
-        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
-            invalid.push(display_path(path));
-            continue;
-        };
-        let count = count_hook_commands(&settings, "SessionStart");
-        if count > 0 {
-            found.push(format!("{} ({count})", display_path(path)));
-        }
-    }
-
-    let count = found
-        .iter()
-        .filter_map(|entry| {
-            entry
-                .rsplit_once('(')
-                .and_then(|(_, count)| count.trim_end_matches(')').parse::<usize>().ok())
-        })
-        .sum::<usize>();
-    let hooks = if found.is_empty() {
-        "! Claude startup hooks: none found in checked settings".to_string()
-    } else {
-        format!(
-            "! Claude startup hooks: found {} command(s) in {}",
-            count,
-            found.join(", ")
-        )
-    };
-    let hooks = if count > 1 {
-        format!(
-            "{hooks}\n  hint: multiple Claude SessionStart hooks can run duplicate startup work; review the listed settings file(s) and keep only intentional hooks. cduo relay uses the project Stop hook installed by `cduo init`."
-        )
-    } else {
-        hooks
-    };
-    if invalid.is_empty() {
-        hooks
-    } else {
-        format!("{hooks}; invalid JSON in {}", invalid.join(", "))
-    }
-}
-
-fn count_hook_commands(settings: &serde_json::Value, hook_name: &str) -> usize {
-    settings
-        .get("hooks")
-        .and_then(|hooks| hooks.get(hook_name))
-        .and_then(serde_json::Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| entry.get("hooks").and_then(serde_json::Value::as_array))
-                .map(|hooks| {
-                    hooks
-                        .iter()
-                        .filter(|hook| {
-                            hook.get("type").and_then(serde_json::Value::as_str) == Some("command")
-                                && hook
-                                    .get("command")
-                                    .and_then(serde_json::Value::as_str)
-                                    .is_some_and(|command| !command.trim().is_empty())
-                        })
-                        .count()
-                })
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
-fn display_path(path: &Path) -> String {
-    let Ok(cwd) = std::env::current_dir() else {
-        return path.display().to_string();
-    };
-    path.strip_prefix(&cwd)
-        .map(|relative| relative.display().to_string())
-        .unwrap_or_else(|_| path.display().to_string())
 }
 
 fn which(command: &str) -> Option<String> {
