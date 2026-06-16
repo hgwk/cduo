@@ -173,7 +173,7 @@ fn test_init_writes_to_target_directory() {
     let project = tmp.path().join("project");
     let home = tmp.path().join("home");
     std::env::set_var("CDUO_HOME", &home);
-    let result = init(false, Some(&project));
+    let result = init(false, Some(&project), None);
     std::env::remove_var("CDUO_HOME");
 
     result.unwrap();
@@ -181,6 +181,27 @@ fn test_init_writes_to_target_directory() {
     assert!(project.join("AGENTS.md").exists());
     assert!(project.join("CLAUDE.md").exists());
     assert!(home.join("orchestration-guide.md").exists());
+}
+
+#[test]
+fn test_init_home_arg_overrides_env_home() {
+    let _guard = env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    let env_home = tmp.path().join("env-home");
+    let flag_home = tmp.path().join("flag-home");
+    std::env::set_var("CDUO_HOME", &env_home);
+
+    let result = init(false, Some(&project), Some(&flag_home));
+    let restored = std::env::var_os("CDUO_HOME");
+    std::env::remove_var("CDUO_HOME");
+
+    result.unwrap();
+    assert_eq!(restored.as_deref(), Some(env_home.as_os_str()));
+    assert!(flag_home.join("orchestration-guide.md").exists());
+    assert!(!env_home.join("orchestration-guide.md").exists());
+    let agents = fs::read_to_string(project.join("AGENTS.md")).unwrap();
+    assert!(agents.starts_with(&format!("@{}", flag_home.display())));
 }
 
 #[test]

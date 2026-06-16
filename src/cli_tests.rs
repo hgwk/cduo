@@ -226,13 +226,28 @@ fn parses_doctor_subcommands() {
 
 #[test]
 fn parses_init_target() {
-    let cli = Cli::parse_from(["cduo", "init", "--target", "/tmp/cduo-target"]);
+    let cli = Cli::parse_from([
+        "cduo",
+        "init",
+        "--target",
+        "/tmp/cduo-target",
+        "--home",
+        "/tmp/cduo-home",
+    ]);
     match cli.command.unwrap() {
-        Commands::Init { force, target } => {
+        Commands::Init {
+            force,
+            target,
+            home,
+        } => {
             assert!(!force);
             assert_eq!(
                 target.as_deref(),
                 Some(std::path::Path::new("/tmp/cduo-target"))
+            );
+            assert_eq!(
+                home.as_deref(),
+                Some(std::path::Path::new("/tmp/cduo-home"))
             );
         }
         _ => panic!("expected init command"),

@@ -109,6 +109,9 @@ pub enum Commands {
 
         #[arg(long, help = "Project directory to initialize")]
         target: Option<PathBuf>,
+
+        #[arg(long, help = "cduo home directory for orchestration guide")]
+        home: Option<PathBuf>,
     },
 
     #[command(about = "Check setup")]

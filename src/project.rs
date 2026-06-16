@@ -60,7 +60,8 @@ pub(crate) fn orchestration_ref() -> Result<String> {
     Ok(format!("@{}", home_orchestration_path()?.display()))
 }
 
-pub fn init(force: bool, target: Option<&Path>) -> Result<()> {
+pub fn init(force: bool, target: Option<&Path>, home: Option<&Path>) -> Result<()> {
+    let _home_restore = set_cduo_home_override(home)?;
     let cwd = std::env::current_dir()?;
     let project_root = target.unwrap_or(cwd.as_path());
     let paths = project_paths(project_root);
@@ -100,6 +101,38 @@ pub fn init(force: bool, target: Option<&Path>) -> Result<()> {
     println!("\n✅ Initialization complete!");
     println!("Run: cduo claude");
     Ok(())
+}
+
+fn set_cduo_home_override(home: Option<&Path>) -> Result<Option<HomeRestore>> {
+    let Some(home) = home else {
+        return Ok(None);
+    };
+    let abs = if home.is_absolute() {
+        home.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(home)
+    };
+    let old = std::env::var("CDUO_HOME").ok();
+    let had_old = old.is_some();
+    std::env::set_var("CDUO_HOME", abs);
+    Ok(Some(HomeRestore { old, had_old }))
+}
+
+impl Drop for HomeRestore {
+    fn drop(&mut self) {
+        if self.had_old {
+            if let Some(old) = &self.old {
+                std::env::set_var("CDUO_HOME", old);
+            }
+        } else {
+            std::env::remove_var("CDUO_HOME");
+        }
+    }
+}
+
+struct HomeRestore {
+    old: Option<String>,
+    had_old: bool,
 }
 
 fn ensure_stop_hook(path: &Path, force: bool) -> Result<bool> {
