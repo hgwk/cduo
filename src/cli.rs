@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "cduo")]
@@ -105,6 +106,9 @@ pub enum Commands {
     Init {
         #[arg(long, short)]
         force: bool,
+
+        #[arg(long)]
+        target: Option<PathBuf>,
     },
 
     #[command(about = "Check setup")]

@@ -131,6 +131,7 @@ can be changed with `CDUO_STOP_TOKEN`. Legacy `CDUO_STOP_RELAY` and
 | `cduo status [--verbose]` | Report native foreground-session behavior |
 | `cduo init` | Ensure the Claude `Stop` hook and add absolute `~/.cduo/orchestration-guide.md` references to `AGENTS.md` and `CLAUDE.md` |
 | `cduo init --force` | Refresh `~/.cduo/orchestration-guide.md`, rewrite references, and refresh `.claude/settings.local.json` |
+| `cduo init --target <path>` | Initialize another project directory, matching `ldgr` / `hrns` automation flows |
 | `cduo backup` | Back up orchestration-related files in the current project |
 | `cduo update` | Update to the latest version |
 | `cduo version` or `cduo --version` | Show the installed cduo version |

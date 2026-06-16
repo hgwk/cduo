@@ -112,8 +112,8 @@ async fn main() {
             let _ = verbose;
             println!("Native cduo sessions run in the foreground. No background tmux sessions are managed.");
         }
-        Commands::Init { force } => {
-            if let Err(e) = project::init(force) {
+        Commands::Init { force, target } => {
+            if let Err(e) = project::init(force, target.as_deref()) {
                 eprintln!("Error: {e}");
                 process::exit(1);
             }

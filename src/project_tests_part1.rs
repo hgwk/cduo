@@ -167,6 +167,23 @@ fn test_ensure_instruction_reference_creates_new() {
 }
 
 #[test]
+fn test_init_writes_to_target_directory() {
+    let _guard = env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    let home = tmp.path().join("home");
+    std::env::set_var("CDUO_HOME", &home);
+    let result = init(false, Some(&project));
+    std::env::remove_var("CDUO_HOME");
+
+    result.unwrap();
+    assert!(project.join(".claude").join("settings.local.json").exists());
+    assert!(project.join("AGENTS.md").exists());
+    assert!(project.join("CLAUDE.md").exists());
+    assert!(home.join("orchestration-guide.md").exists());
+}
+
+#[test]
 fn test_ensure_instruction_reference_prepends_existing() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("AGENTS.md");

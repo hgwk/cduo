@@ -60,9 +60,10 @@ pub(crate) fn orchestration_ref() -> Result<String> {
     Ok(format!("@{}", home_orchestration_path()?.display()))
 }
 
-pub fn init(force: bool) -> Result<()> {
+pub fn init(force: bool, target: Option<&Path>) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let paths = project_paths(&cwd);
+    let project_root = target.unwrap_or(cwd.as_path());
+    let paths = project_paths(project_root);
 
     fs::create_dir_all(&paths.claude_dir)?;
 
