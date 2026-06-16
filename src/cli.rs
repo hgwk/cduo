@@ -107,7 +107,7 @@ pub enum Commands {
         #[arg(long, short)]
         force: bool,
 
-        #[arg(long)]
+        #[arg(long, help = "Project directory to initialize")]
         target: Option<PathBuf>,
     },
 
