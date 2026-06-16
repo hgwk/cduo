@@ -29,6 +29,7 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - run: node -c npm/install.js
+      - run: node -c npm/bin/cduo
       - run: npm pack --dry-run
         working-directory: npm
 
