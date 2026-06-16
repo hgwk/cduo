@@ -84,7 +84,7 @@ fn stop_hook_pair_id_report_detects_pair_aware_hook() {
             "hooks": {
                 "Stop": [{"hooks": [{
                     "type": "command",
-                    "command": "CDUO_PAIR_ID=${CDUO_PAIR_ID:-} cduo relay"
+                    "command": "CDUO_PAIR_ID=${CDUO_PAIR_ID:-} python3 -c 'payload={\"pair_id\":\"x\",\"terminal_id\":\"a\"}'"
                 }]}]
             }
         })
@@ -114,4 +114,33 @@ fn stop_hook_pair_id_report_warns_when_stop_hook_is_not_pair_aware() {
     let report = claude_stop_pair_id_report(&[settings_path]);
     assert!(report.contains("missing CDUO_PAIR_ID"));
     assert!(report.contains("cduo init"));
+}
+
+#[test]
+fn stop_hook_pair_id_report_warns_about_mixed_legacy_cduo_hooks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings_path = tmp.path().join("settings.json");
+    std::fs::write(
+        &settings_path,
+        serde_json::json!({
+            "hooks": {
+                "Stop": [{"hooks": [
+                    {
+                        "type": "command",
+                        "command": "CDUO_PAIR_ID=${CDUO_PAIR_ID:-} python3 -c 'payload={\"pair_id\":\"x\",\"terminal_id\":\"a\"}; url=\"/hook\"'"
+                    },
+                    {
+                        "type": "command",
+                        "command": "python3 -c 'payload={\"terminal_id\":\"a\"}; url=\"/hook\"'"
+                    }
+                ]}]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let report = claude_stop_pair_id_report(&[settings_path]);
+    assert!(report.contains("found pair-aware hook"));
+    assert!(report.contains("legacy cduo Stop hook without pair id"));
 }

@@ -62,6 +62,7 @@ pub(super) fn claude_startup_hooks_report(paths: &[PathBuf]) -> String {
 pub(super) fn claude_stop_pair_id_report(paths: &[PathBuf]) -> String {
     let mut stop_count = 0;
     let mut pair_aware = Vec::new();
+    let mut pairless_cduo = Vec::new();
     let mut invalid = Vec::new();
     for path in paths {
         let Ok(content) = fs::read_to_string(path) else {
@@ -77,9 +78,13 @@ pub(super) fn claude_stop_pair_id_report(paths: &[PathBuf]) -> String {
         if aware > 0 {
             pair_aware.push(format!("{} ({aware}/{count})", display_path(path)));
         }
+        let pairless = count_pairless_cduo_stop_commands(&settings);
+        if pairless > 0 {
+            pairless_cduo.push(format!("{} ({pairless})", display_path(path)));
+        }
     }
 
-    let report = if stop_count == 0 {
+    let mut report = if stop_count == 0 {
         "! Claude Stop hook pair id: no Stop hook found; run `cduo init`".to_string()
     } else if pair_aware.is_empty() {
         "! Claude Stop hook pair id: missing CDUO_PAIR_ID in Stop hook; run `cduo init`".to_string()
@@ -89,6 +94,12 @@ pub(super) fn claude_stop_pair_id_report(paths: &[PathBuf]) -> String {
             pair_aware.join(", ")
         )
     };
+    if !pairless_cduo.is_empty() {
+        report = format!(
+            "{report}\n! Claude Stop hook pair id: found legacy cduo Stop hook without pair id in {}; run `cduo init --force` for that project or remove the stale hook.",
+            pairless_cduo.join(", ")
+        );
+    }
     if invalid.is_empty() {
         report
     } else {
@@ -102,7 +113,17 @@ pub(super) fn count_hook_commands(settings: &serde_json::Value, hook_name: &str)
 
 fn count_stop_pair_aware_commands(settings: &serde_json::Value) -> usize {
     hook_commands(settings, "Stop")
-        .filter(|command| command.contains("CDUO_PAIR_ID"))
+        .filter(|command| command.contains("CDUO_PAIR_ID") && command.contains("\"pair_id\""))
+        .count()
+}
+
+fn count_pairless_cduo_stop_commands(settings: &serde_json::Value) -> usize {
+    hook_commands(settings, "Stop")
+        .filter(|command| {
+            command.contains("/hook")
+                && command.contains("terminal_id")
+                && !(command.contains("CDUO_PAIR_ID") && command.contains("\"pair_id\""))
+        })
         .count()
 }
 
