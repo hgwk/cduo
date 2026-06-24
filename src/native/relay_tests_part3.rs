@@ -47,11 +47,11 @@ async fn relay_delivery_prefixes_source_agent_name_in_both_directions() {
     assert_paste_write_contains(&writes_a, "a", "Other Codex says: FROM_CODEX");
     assert_paste_write_contains(&writes_b, "b", "Other Claude says: FROM_CLAUDE");
     assert_eq!(
-        pending_prompts.get("a").map(String::as_str),
+        pending_prompts.get("a").map(|prompt| prompt.text.as_str()),
         Some("Other Codex says: FROM_CODEX")
     );
     assert_eq!(
-        pending_prompts.get("b").map(String::as_str),
+        pending_prompts.get("b").map(|prompt| prompt.text.as_str()),
         Some("Other Claude says: FROM_CLAUDE")
     );
 }

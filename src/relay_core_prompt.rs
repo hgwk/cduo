@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
+
 pub fn normalize_prompt_text(value: &str) -> String {
     let mut out = Vec::new();
     let mut chars = value.chars().peekable();
@@ -53,6 +55,14 @@ where
 }
 
 pub fn codex_transcript_contains_user_prompt(path: &Path, expected_prompt: &str) -> bool {
+    codex_transcript_contains_user_prompt_since(path, expected_prompt, None)
+}
+
+pub fn codex_transcript_contains_user_prompt_since(
+    path: &Path,
+    expected_prompt: &str,
+    earliest_user_prompt_at: Option<DateTime<Utc>>,
+) -> bool {
     let expected_prompt = normalize_prompt_text(expected_prompt);
     let compact_expected = compact_prompt_text(&expected_prompt);
     if expected_prompt.is_empty() {
@@ -67,21 +77,38 @@ pub fn codex_transcript_contains_user_prompt(path: &Path, expected_prompt: &str)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .any(|entry| {
-            codex_user_text_from_entry(&entry).is_some_and(|text| {
-                let compact_text = compact_prompt_text(&text);
-                text == expected_prompt
-                    || text.contains(&expected_prompt)
-                    || expected_prompt.contains(&text)
-                    || (!compact_text.is_empty()
-                        && !compact_expected.is_empty()
-                        && (compact_text.contains(&compact_expected)
-                            || compact_expected.contains(&compact_text)))
-            })
+            if earliest_user_prompt_at.is_some_and(|earliest| match codex_entry_timestamp(&entry) {
+                Some(timestamp) => timestamp < earliest,
+                None => true,
+            }) {
+                return false;
+            }
+            codex_user_text_from_entry(&entry)
+                .is_some_and(|text| prompt_text_matches(&text, &expected_prompt, &compact_expected))
         })
 }
 
 fn compact_prompt_text(value: &str) -> String {
     value.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn prompt_text_matches(text: &str, expected_prompt: &str, compact_expected: &str) -> bool {
+    let compact_text = compact_prompt_text(text);
+    text == expected_prompt
+        || text.contains(expected_prompt)
+        || expected_prompt.contains(text)
+        || (!compact_text.is_empty()
+            && !compact_expected.is_empty()
+            && (compact_text.contains(compact_expected)
+                || compact_expected.contains(&compact_text)))
+}
+
+fn codex_entry_timestamp(entry: &serde_json::Value) -> Option<DateTime<Utc>> {
+    entry
+        .get("timestamp")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
 }
 
 fn codex_user_text_from_entry(entry: &serde_json::Value) -> Option<String> {

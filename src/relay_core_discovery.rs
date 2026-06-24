@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::relay_core_prompt::codex_transcript_contains_user_prompt;
+use crate::relay_core_prompt::{
+    codex_transcript_contains_user_prompt, codex_transcript_contains_user_prompt_since,
+};
 use crate::transcripts::{self, TranscriptOutput};
 
 pub fn codex_sessions_root() -> PathBuf {
@@ -78,11 +80,12 @@ fn codex_session_meta(path: &Path) -> Option<(PathBuf, chrono::DateTime<chrono::
     None
 }
 
-pub fn discover_recent_codex_transcript(
+pub fn discover_recent_codex_transcript_after_prompt(
     cwd: &Path,
     started_at: chrono::DateTime<chrono::Utc>,
     excluded: &HashSet<PathBuf>,
     expected_prompt: &str,
+    prompt_recorded_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Option<PathBuf> {
     discover_recent_codex_transcript_in_root(
         &codex_sessions_root(),
@@ -90,6 +93,7 @@ pub fn discover_recent_codex_transcript(
         started_at,
         excluded,
         expected_prompt,
+        prompt_recorded_at,
     )
 }
 
@@ -99,6 +103,7 @@ pub(crate) fn discover_recent_codex_transcript_in_root(
     started_at: chrono::DateTime<chrono::Utc>,
     excluded: &HashSet<PathBuf>,
     expected_prompt: &str,
+    prompt_recorded_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Option<PathBuf> {
     let mut files = Vec::new();
     collect_jsonl_files(root, &mut files);
@@ -106,7 +111,18 @@ pub(crate) fn discover_recent_codex_transcript_in_root(
     files
         .into_iter()
         .filter(|path| !excluded.contains(path))
-        .filter(|path| codex_transcript_contains_user_prompt(path, expected_prompt))
+        .filter(|path| {
+            prompt_recorded_at.map_or_else(
+                || codex_transcript_contains_user_prompt(path, expected_prompt),
+                |recorded_at| {
+                    codex_transcript_contains_user_prompt_since(
+                        path,
+                        expected_prompt,
+                        Some(recorded_at),
+                    )
+                },
+            )
+        })
         .filter_map(|path| {
             let (session_cwd, session_started_at) = codex_session_meta(&path)?;
             let modified = std::fs::metadata(&path).ok()?.modified().ok()?;

@@ -8,7 +8,7 @@ use crate::hook::HookEvent;
 use crate::native::relay::{RelayControl, RelayState};
 use crate::native::relay_control::*;
 use crate::native::relay_delivery::{
-    ensure_codex_transcript_local, manual_relay, ManualRelayContext,
+    ensure_codex_transcript_local, manual_relay, ManualRelayContext, PendingPrompt,
 };
 use crate::relay_core::{
     count_claude_stop_hook_summaries, discover_recent_claude_transcript, drop_seen_signature,
@@ -32,7 +32,7 @@ pub(super) fn handle_relay_input(
         );
         state
             .codex_pending_prompts
-            .insert(pane_id.to_string(), prompt);
+            .insert(pane_id.to_string(), PendingPrompt::new(prompt));
     }
 }
 

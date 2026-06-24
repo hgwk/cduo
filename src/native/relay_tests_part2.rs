@@ -164,7 +164,7 @@ async fn manual_relay_primes_codex_target_prompt_binding() {
     .await;
 
     assert_eq!(
-        pending_prompts.get("b").map(String::as_str),
+        pending_prompts.get("b").map(|prompt| prompt.text.as_str()),
         Some("Other Claude says: MANUAL_CLAUDE_TO_CODEX_PROMPT"),
         "manual relay should prime Codex transcript binding for the target pane"
     );

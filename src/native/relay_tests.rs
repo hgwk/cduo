@@ -183,14 +183,33 @@ fn write_codex_rollout(
     user_prompt: &str,
     assistant_text: &str,
 ) {
+    write_codex_rollout_with_message_timestamp(
+        path,
+        cwd,
+        timestamp,
+        timestamp,
+        user_prompt,
+        assistant_text,
+    );
+}
+
+fn write_codex_rollout_with_message_timestamp(
+    path: &std::path::Path,
+    cwd: &std::path::Path,
+    session_timestamp: chrono::DateTime<chrono::Utc>,
+    message_timestamp: chrono::DateTime<chrono::Utc>,
+    user_prompt: &str,
+    assistant_text: &str,
+) {
     let cwd_json = serde_json::to_string(&cwd.to_string_lossy()).unwrap();
-    let ts = timestamp.to_rfc3339();
+    let session_ts = session_timestamp.to_rfc3339();
+    let message_ts = message_timestamp.to_rfc3339();
     let user_json = serde_json::to_string(user_prompt).unwrap();
     let assistant_json = serde_json::to_string(assistant_text).unwrap();
     let body = format!(
-        "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":{cwd_json},\"timestamp\":\"{ts}\"}}}}\n\
-         {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":{user_json}}}]}}}}\n\
-         {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":{assistant_json}}}]}}}}\n",
+        "{{\"timestamp\":\"{session_ts}\",\"type\":\"session_meta\",\"payload\":{{\"cwd\":{cwd_json},\"timestamp\":\"{session_ts}\"}}}}\n\
+         {{\"timestamp\":\"{message_ts}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":{user_json}}}]}}}}\n\
+         {{\"timestamp\":\"{message_ts}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":{assistant_json}}}]}}}}\n",
     );
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, body).unwrap();
@@ -204,6 +223,8 @@ fn transcript_output(text: &str) -> TranscriptOutput {
 mod relay_tests_part1;
 #[path = "relay_tests_part10.rs"]
 mod relay_tests_part10;
+#[path = "relay_tests_part11.rs"]
+mod relay_tests_part11;
 #[path = "relay_tests_part2.rs"]
 mod relay_tests_part2;
 #[path = "relay_tests_part3.rs"]

@@ -42,7 +42,8 @@ async fn codex_transcript_binding_excludes_rollout_bound_to_other_pane() {
     );
 
     let mut transcripts = HashMap::from([("b".to_string(), second_rollout.clone())]);
-    let pending_prompts = HashMap::from([("a".to_string(), prompt.to_string())]);
+    let pending_prompts =
+        HashMap::from([("a".to_string(), PendingPrompt::new(prompt.to_string()))]);
 
     ensure_codex_transcript_local(
         "a",
@@ -95,7 +96,10 @@ async fn codex_transcript_binding_does_not_fallback_to_unmatched_rollout() {
     );
 
     let mut transcripts = HashMap::new();
-    let pending_prompts = HashMap::from([("a".to_string(), "PROMPT_FROM_A".to_string())]);
+    let pending_prompts = HashMap::from([(
+        "a".to_string(),
+        PendingPrompt::new("PROMPT_FROM_A".to_string()),
+    )]);
 
     ensure_codex_transcript_local(
         "a",
@@ -111,6 +115,78 @@ async fn codex_transcript_binding_does_not_fallback_to_unmatched_rollout() {
     assert!(
         !transcripts.contains_key("a"),
         "Codex pane A should not bind an unrelated recent rollout"
+    );
+}
+
+#[tokio::test]
+async fn codex_transcript_binding_rejects_prompt_from_before_pending_prompt() {
+    let _guard = env_lock().lock().await;
+
+    let temp = tempdir().unwrap();
+    let codex_home = temp.path().join("codex");
+    let cwd = temp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let prev_codex_home = std::env::var_os("CODEX_HOME");
+    std::env::set_var("CODEX_HOME", &codex_home);
+
+    let started_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+    let prompt_recorded_at = chrono::Utc::now();
+    let stale_prompt_at = prompt_recorded_at - chrono::Duration::minutes(5);
+    let fresh_prompt_at = prompt_recorded_at + chrono::Duration::seconds(1);
+    let prompt = "SAME_RELAY_PROMPT_FROM_OLDER_PAIR";
+    let stale_rollout = codex_home
+        .join("sessions")
+        .join("2026")
+        .join("06")
+        .join("18")
+        .join("rollout-stale.jsonl");
+    let fresh_rollout = codex_home
+        .join("sessions")
+        .join("2026")
+        .join("06")
+        .join("19")
+        .join("rollout-fresh.jsonl");
+    write_codex_rollout_with_message_timestamp(
+        &stale_rollout,
+        &cwd,
+        stale_prompt_at,
+        stale_prompt_at,
+        prompt,
+        "STALE_ANSWER",
+    );
+    write_codex_rollout_with_message_timestamp(
+        &fresh_rollout,
+        &cwd,
+        fresh_prompt_at,
+        fresh_prompt_at,
+        prompt,
+        "FRESH_ANSWER",
+    );
+
+    let mut transcripts = HashMap::new();
+    let pending_prompts = HashMap::from([(
+        "a".to_string(),
+        PendingPrompt {
+            text: prompt.to_string(),
+            recorded_at: prompt_recorded_at,
+        },
+    )]);
+
+    ensure_codex_transcript_local(
+        "a",
+        &mut transcripts,
+        &pending_prompts,
+        &cwd,
+        started_at,
+        &temp.path().join("relay.log"),
+    );
+
+    restore_codex_home(prev_codex_home);
+
+    assert_eq!(
+        transcripts.get("a"),
+        Some(&fresh_rollout),
+        "Codex pane should ignore stale same-prompt rollouts from older pairs"
     );
 }
 

@@ -106,14 +106,17 @@ fn discovers_resumed_codex_transcript_when_file_was_modified_after_runtime_start
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let old_session_ts = chrono::Utc::now() - chrono::Duration::days(1);
     let started_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    let message_ts = chrono::Utc::now();
     let cwd_json = serde_json::to_string(&cwd.to_string_lossy()).unwrap();
     let prompt_json = serde_json::to_string("RESUMED_PROMPT").unwrap();
     std::fs::write(
             &path,
             format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":{cwd_json},\"timestamp\":\"{}\"}}}}\n\
-                 {{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":{prompt_json}}}]}}}}\n",
-                old_session_ts.to_rfc3339()
+                "{{\"timestamp\":\"{}\",\"type\":\"session_meta\",\"payload\":{{\"cwd\":{cwd_json},\"timestamp\":\"{}\"}}}}\n\
+                 {{\"timestamp\":\"{}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":{prompt_json}}}]}}}}\n",
+                old_session_ts.to_rfc3339(),
+                old_session_ts.to_rfc3339(),
+                message_ts.to_rfc3339()
             ),
         )
         .unwrap();
@@ -124,6 +127,7 @@ fn discovers_resumed_codex_transcript_when_file_was_modified_after_runtime_start
         started_at,
         &HashSet::new(),
         "RESUMED_PROMPT",
+        Some(started_at),
     );
 
     assert_eq!(discovered, Some(path));

@@ -81,7 +81,7 @@ pub async fn run(inputs: RelayInputs) {
     let claude_last_signatures: HashMap<String, String> = HashMap::new();
     let claude_last_stop_counts: HashMap<String, usize> = HashMap::new();
     let claude_transcripts: HashMap<String, PathBuf> = HashMap::new();
-    let codex_pending_prompts: HashMap<String, String> = HashMap::new();
+    let codex_pending_prompts: HashMap<String, PendingPrompt> = HashMap::new();
     let controls = RelayControlState::from_env();
 
     log_event(&log_path, format!("native_relay_start pair={pair_id}"));
@@ -151,7 +151,7 @@ pub(super) struct RelayState {
     pub(super) claude_last_signatures: HashMap<String, String>,
     pub(super) claude_last_stop_counts: HashMap<String, usize>,
     pub(super) claude_transcripts: HashMap<String, PathBuf>,
-    pub(super) codex_pending_prompts: HashMap<String, String>,
+    pub(super) codex_pending_prompts: HashMap<String, PendingPrompt>,
     pub(super) controls: RelayControlState,
     last_reported_status: Option<RelayStatus>,
 }

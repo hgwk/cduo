@@ -9,10 +9,27 @@ use crate::message::Message;
 use crate::native::relay_control::*;
 use crate::pair_router::PairRouter;
 use crate::relay_core::{
-    discover_recent_codex_transcript, log_event, normalize_prompt_text, pane_uses_claude,
-    pane_uses_codex, preview, submit_delay_for_agent,
+    discover_recent_codex_transcript_after_prompt, log_event, normalize_prompt_text,
+    pane_uses_claude, pane_uses_codex, preview, submit_delay_for_agent,
 };
 use crate::transcripts::{self, TranscriptOutput};
+
+const PROMPT_MATCH_GRACE_MS: i64 = 2_000;
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingPrompt {
+    pub(super) text: String,
+    pub(super) recorded_at: DateTime<Utc>,
+}
+
+impl PendingPrompt {
+    pub(super) fn new(text: String) -> Self {
+        Self {
+            text,
+            recorded_at: Utc::now() - chrono::Duration::milliseconds(PROMPT_MATCH_GRACE_MS),
+        }
+    }
+}
 
 pub(super) async fn deliver_via_channel(
     log_path: &std::path::Path,
@@ -20,19 +37,25 @@ pub(super) async fn deliver_via_channel(
     rx_b: &mut mpsc::Receiver<Message>,
     write_tx: &mpsc::Sender<(String, Vec<u8>)>,
     pane_agents: &HashMap<String, String>,
-    pending_prompts: &mut HashMap<String, String>,
+    pending_prompts: &mut HashMap<String, PendingPrompt>,
 ) {
     while let Ok(msg) = rx_a.try_recv() {
         let content = prefixed_agent_content(&msg.source_node_id, &msg.content, pane_agents);
         log_deliver(log_path, "a", &content);
-        pending_prompts.insert("a".to_string(), normalize_prompt_text(&content));
+        pending_prompts.insert(
+            "a".to_string(),
+            PendingPrompt::new(normalize_prompt_text(&content)),
+        );
         let agent = pane_agents.get("a").map(String::as_str).unwrap_or("claude");
         send_relay_via_channel(write_tx, "a", &content, agent).await;
     }
     while let Ok(msg) = rx_b.try_recv() {
         let content = prefixed_agent_content(&msg.source_node_id, &msg.content, pane_agents);
         log_deliver(log_path, "b", &content);
-        pending_prompts.insert("b".to_string(), normalize_prompt_text(&content));
+        pending_prompts.insert(
+            "b".to_string(),
+            PendingPrompt::new(normalize_prompt_text(&content)),
+        );
         let agent = pane_agents.get("b").map(String::as_str).unwrap_or("claude");
         send_relay_via_channel(write_tx, "b", &content, agent).await;
     }
@@ -110,7 +133,7 @@ pub(super) struct ManualRelayContext<'a> {
     pub(super) pane_agents: &'a HashMap<String, String>,
     pub(super) codex_transcripts: &'a HashMap<String, PathBuf>,
     pub(super) claude_transcripts: &'a HashMap<String, PathBuf>,
-    pub(super) pending_prompts: &'a mut HashMap<String, String>,
+    pub(super) pending_prompts: &'a mut HashMap<String, PendingPrompt>,
     pub(super) write_tx: &'a mpsc::Sender<(String, Vec<u8>)>,
     pub(super) log_path: &'a std::path::Path,
 }
@@ -159,8 +182,10 @@ pub(super) async fn manual_relay(pane_id: &str, ctx: ManualRelayContext<'_>) {
         &output.output,
         ctx.pane_agents,
     ));
-    ctx.pending_prompts
-        .insert(target.to_string(), normalize_prompt_text(&content));
+    ctx.pending_prompts.insert(
+        target.to_string(),
+        PendingPrompt::new(normalize_prompt_text(&content)),
+    );
     let target_agent = ctx
         .pane_agents
         .get(target)
@@ -180,17 +205,22 @@ pub(super) async fn manual_relay(pane_id: &str, ctx: ManualRelayContext<'_>) {
 pub(super) fn ensure_codex_transcript_local(
     pane_id: &str,
     transcripts: &mut HashMap<String, PathBuf>,
-    pending_prompts: &HashMap<String, String>,
+    pending_prompts: &HashMap<String, PendingPrompt>,
     cwd: &std::path::Path,
     started_at: DateTime<Utc>,
     log_path: &std::path::Path,
 ) {
-    let Some(expected_prompt) = pending_prompts.get(pane_id) else {
+    let Some(pending_prompt) = pending_prompts.get(pane_id) else {
         return;
     };
+    let expected_prompt = &pending_prompt.text;
 
     if transcripts.get(pane_id).is_some_and(|path| {
-        crate::relay_core::codex_transcript_contains_user_prompt(path, expected_prompt)
+        crate::relay_core::codex_transcript_contains_user_prompt_since(
+            path,
+            expected_prompt,
+            Some(pending_prompt.recorded_at),
+        )
     }) {
         return;
     }
@@ -200,9 +230,13 @@ pub(super) fn ensure_codex_transcript_local(
         .filter(|(source, _)| source.as_str() != pane_id)
         .map(|(_, path)| path.clone())
         .collect::<std::collections::HashSet<_>>();
-    let Some(path) =
-        discover_recent_codex_transcript(cwd, started_at, &used_by_other_pane, expected_prompt)
-    else {
+    let Some(path) = discover_recent_codex_transcript_after_prompt(
+        cwd,
+        started_at,
+        &used_by_other_pane,
+        expected_prompt,
+        Some(pending_prompt.recorded_at),
+    ) else {
         log_event(
             log_path,
             format!(

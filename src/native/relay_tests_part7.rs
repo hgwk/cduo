@@ -132,6 +132,7 @@ async fn communication_gate_codex_resume_session_with_old_session_timestamp() {
 
     let started_at = chrono::Utc::now() - chrono::Duration::seconds(1);
     let old_session_ts = chrono::Utc::now() - chrono::Duration::days(1);
+    let message_ts = chrono::Utc::now() + chrono::Duration::seconds(1);
     let rollout = codex_home
         .join("sessions")
         .join("2026")
@@ -140,7 +141,14 @@ async fn communication_gate_codex_resume_session_with_old_session_timestamp() {
         .join("rollout-resumed-codex.jsonl");
     let prompt = "RESUMED_CODEX_PROMPT";
     let answer = "RESUMED_CODEX_ANSWER";
-    write_codex_rollout(&rollout, &cwd, old_session_ts, prompt, answer);
+    write_codex_rollout_with_message_timestamp(
+        &rollout,
+        &cwd,
+        old_session_ts,
+        message_ts,
+        prompt,
+        answer,
+    );
 
     let pane_agents = HashMap::from([
         ("a".to_string(), "codex".to_string()),

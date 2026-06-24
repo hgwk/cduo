@@ -2,7 +2,7 @@
 
 pub use crate::relay_core_discovery::{
     count_claude_stop_hook_summaries, discover_recent_claude_transcript,
-    discover_recent_codex_transcript, read_claude_transcript_with_retry,
+    discover_recent_codex_transcript_after_prompt, read_claude_transcript_with_retry,
 };
 #[cfg(test)]
 pub(crate) use crate::relay_core_discovery::{
@@ -14,7 +14,11 @@ pub use crate::relay_core_io::{
 };
 #[cfg(test)]
 pub use crate::relay_core_io::{DEFAULT_CLAUDE_SUBMIT_DELAY_MS, DEFAULT_SUBMIT_DELAY_MS};
-pub use crate::relay_core_prompt::{codex_transcript_contains_user_prompt, normalize_prompt_text};
+#[cfg(test)]
+pub use crate::relay_core_prompt::codex_transcript_contains_user_prompt;
+pub use crate::relay_core_prompt::{
+    codex_transcript_contains_user_prompt_since, normalize_prompt_text,
+};
 
 #[cfg(test)]
 #[path = "relay_core_tests.rs"]
