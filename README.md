@@ -86,7 +86,7 @@ cduo doctor
 cduo start claude codex
 ```
 
-## Companion Tool Roles
+## Companion Suite
 
 - `cduo doctor` checks pair-agent runtime setup and project hook readiness.
 - `ldgr verify` checks ledger lifecycle, audit, worklog, and Git evidence.
